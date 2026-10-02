@@ -31,10 +31,14 @@ func NewServer(ip string, port int) *Server {
 func (s *Server) ListenMessage() {
 	for message := range s.Message {
 		s.mapLock.Lock()
-		for _, user := range s.OnlineUsers {
-			user.C <- message
-		}
+		onlineUsers := s.OnlineUsers // 只保护读，避免阻塞
 		s.mapLock.Unlock()
+		// 启动一个go程去发送消息，避免阻塞
+		go func() {
+			for _, user := range onlineUsers {
+				user.C <- message
+			}
+		}()
 	}
 }
 
@@ -47,14 +51,21 @@ func (s *Server) BroadCast(user *User, msg string) {
 // 监听客户端消息
 func (s *Server) ReceiveMessage(user *User, conn net.Conn) {
 	buf := make([]byte, 4096)
+	var deleteUser = func() {
+		s.mapLock.Lock()
+		delete(s.OnlineUsers, user.Name)
+		s.mapLock.Unlock()
+	}
 	for {
 		n, err := conn.Read(buf)
 		if n == 0 {
 			s.BroadCast(user, "已下线")
+			deleteUser()
 			return
 		}
 		if err != nil && err != io.EOF {
 			fmt.Println("Conn read err:", err)
+			deleteUser()
 			return
 		}
 		msg := string(buf[:n-1]) // 去掉换行符
@@ -62,7 +73,7 @@ func (s *Server) ReceiveMessage(user *User, conn net.Conn) {
 	}
 }
 
-// 处理连接业务
+// 处理连接业务，一个用户一个Handler
 func (s *Server) Handler(conn net.Conn) {
 	// 先锁定map
 	s.mapLock.Lock()
@@ -73,8 +84,9 @@ func (s *Server) Handler(conn net.Conn) {
 	// 广播当前用户上线消息
 	s.BroadCast(user, "已上线")
 	// 接收客户端发送的消息
-	go s.ReceiveMessage(user, conn)
-	select {} // 阻塞当前Handler，防止退出导致go程结束
+	s.ReceiveMessage(user, conn)
+	// 关闭连接
+	conn.Close()
 }
 
 // 启动服务器接口
