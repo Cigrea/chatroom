@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"sync"
 )
@@ -43,6 +44,24 @@ func (s *Server) BroadCast(user *User, msg string) {
 	s.Message <- sendMsg
 }
 
+// 监听客户端消息
+func (s *Server) ReceiveMessage(user *User, conn net.Conn) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := conn.Read(buf)
+		if n == 0 {
+			s.BroadCast(user, "已下线")
+			return
+		}
+		if err != nil && err != io.EOF {
+			fmt.Println("Conn read err:", err)
+			return
+		}
+		msg := string(buf[:n-1]) // 去掉换行符
+		s.BroadCast(user, msg)
+	}
+}
+
 // 处理连接业务
 func (s *Server) Handler(conn net.Conn) {
 	// 先锁定map
@@ -51,7 +70,11 @@ func (s *Server) Handler(conn net.Conn) {
 	user := NewUser(conn)
 	s.OnlineUsers[user.Name] = user
 	s.mapLock.Unlock()
-	s.BroadCast(user, "用户上线")
+	// 广播当前用户上线消息
+	s.BroadCast(user, "已上线")
+	// 接收客户端发送的消息
+	go s.ReceiveMessage(user, conn)
+	select {} // 阻塞当前Handler，防止退出导致go程结束
 }
 
 // 启动服务器接口
@@ -69,13 +92,13 @@ func (s *Server) Start() {
 
 	// 监听新连接
 	for {
-		// accept
+		// 接受新连接
 		conn, err := listener.Accept()
 		if err != nil {
 			fmt.Println("Listener accept err:", err)
 			continue
 		}
-		// do handler
+		// 处理新连接业务
 		go s.Handler(conn)
 	}
 }

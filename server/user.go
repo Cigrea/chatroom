@@ -20,7 +20,7 @@ func NewUser(conn net.Conn) *User {
 		C:    make(chan string),
 		conn: conn,
 	}
-	go user.ListenMessage() // 启动监听当前User channel消息的goroutine
+	go user.ListenMessage() // 启动监听当前User channel消息的go程
 	return user
 }
 
