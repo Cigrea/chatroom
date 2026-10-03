@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"sync"
 )
@@ -29,17 +31,30 @@ func NewServer(ip string, port int) *Server {
 
 // 监听Message，发送消息给所有在线User
 func (s *Server) ListenMessage() {
-	for message := range s.Message {
-		s.mapLock.Lock()
-		onlineUsers := s.OnlineUsers // 只保护读，避免阻塞
-		s.mapLock.Unlock()
-		// 启动一个go程去发送消息，避免阻塞
-		go func() {
-			for _, user := range onlineUsers {
-				user.C <- message
+	for msg := range s.Message {
+		s.mapLock.RLock()
+		onlineUsers := make(map[string]*User) // 复制避免因阻塞持续占用锁，影响其它业务
+		maps.Copy(onlineUsers, s.OnlineUsers)
+		s.mapLock.RUnlock()
+		// 广播消息
+		for _, user := range onlineUsers {
+			select {
+			case user.C <- msg:
+			default: // 缓冲区已满，用户长时间不读，断开连接
+				fmt.Printf("用户 %s 缓冲区已满，已断开\n", user.Name)
+				user.CloseConn()
 			}
-		}()
+		}
 	}
+}
+
+// 删除用户
+func (s *Server) DeleteUser(user *User) {
+	s.BroadCast(user, "已下线")
+	s.mapLock.Lock()
+	delete(s.OnlineUsers, user.Name) // 在map里删除用户
+	fmt.Println("Users:", len(s.OnlineUsers))
+	s.mapLock.Unlock()
 }
 
 // 广播消息
@@ -48,24 +63,16 @@ func (s *Server) BroadCast(user *User, msg string) {
 	s.Message <- sendMsg
 }
 
-// 监听客户端消息
+// 监听客户端消息并广播
 func (s *Server) ReceiveMessage(user *User, conn net.Conn) {
 	buf := make([]byte, 4096)
-	var deleteUser = func() {
-		s.mapLock.Lock()
-		delete(s.OnlineUsers, user.Name)
-		s.mapLock.Unlock()
-	}
+	defer s.DeleteUser(user) // 一定要把删除放在循环外，不然每次循环都会defer
 	for {
 		n, err := conn.Read(buf)
-		if n == 0 {
-			s.BroadCast(user, "已下线")
-			deleteUser()
-			return
-		}
-		if err != nil && err != io.EOF {
-			fmt.Println("Conn read err:", err)
-			deleteUser()
+		if n == 0 || (err != nil && err != io.EOF) {
+			if err != nil && err != io.EOF && !errors.Is(err, net.ErrClosed) {
+				fmt.Println("Conn read err:", err)
+			}
 			return
 		}
 		msg := string(buf[:n-1]) // 去掉换行符
@@ -81,12 +88,13 @@ func (s *Server) Handler(conn net.Conn) {
 	user := NewUser(conn)
 	s.OnlineUsers[user.Name] = user
 	s.mapLock.Unlock()
+	fmt.Println("Users:", len(s.OnlineUsers))
 	// 广播当前用户上线消息
 	s.BroadCast(user, "已上线")
 	// 接收客户端发送的消息
 	s.ReceiveMessage(user, conn)
 	// 关闭连接
-	conn.Close()
+	user.CloseConn()
 }
 
 // 启动服务器接口
