@@ -1,7 +1,7 @@
 # 在线网页聊天室
 
 - **技术栈：** 前端：Vue 3，后端：Gin，数据库：SQLite
-- **主要参考资料：** 前端：，后端：[此视频](https://b23.tv/ezAughK)
+- **主要参考资料：** 前端：，后端：[初期](https://b23.tv/ezAughK)、[Gin框架](https://b23.tv/M9ifXAX)
 
 
 ## 如何启动
