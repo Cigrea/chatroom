@@ -2,4 +2,4 @@
 node_modules/
 dist/
 *.db
-scripts/slow-client-check.mjs
+scripts/ws-check.mjs
