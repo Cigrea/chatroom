@@ -12,10 +12,30 @@ import (
 func main() {
 	// ---- 消息存储 ----
 	//
-	// 现在是内存实现：服务端一重启，历史消息就没了。
-	// 因为它只符合 Store 接口，以后换 SQLite 时只需要改这一行，
-	// Hub、Client、HTTP 层一行都不用动。
-	store := NewMemoryStore()
+	// 本项目有两个实现，满足同一个 Store 接口：
+	//
+	//	SQLiteStore  默认。数据在数据库文件里。
+	//	MemoryStore  内存实现，设 CHATROOM_STORE=memory 切换。
+
+	// 因为写了 Store 接口，hub 无需关心是内存还是 SQLite 实现
+	var store Store
+
+	if os.Getenv("CHATROOM_STORE") == "memory" {
+		store = NewMemoryStore()
+		log.Println("消息存储: 内存")
+	} else {
+		dbPath := os.Getenv("CHATROOM_DB")
+		if dbPath == "" {
+			dbPath = "chatroom.db"
+		}
+
+		sqliteStore, err := NewSQLiteStore(dbPath)
+		if err != nil {
+			log.Fatalf("打开数据库失败: %v", err) // 打不开数据库直接退出程序
+		}
+		store = sqliteStore
+		log.Printf("消息存储: SQLite (文件 %s) ", dbPath)
+	}
 
 	// ---- 启动 hub.Run ----
 	hub := NewHub(store)

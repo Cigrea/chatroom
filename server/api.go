@@ -58,12 +58,19 @@ func newRouter(hub *Hub) *gin.Engine {
 			}
 
 			// reply 给 1 个缓冲：保证 Run 不会被拖住。
-			reply := make(chan []Message, 1)
+			reply := make(chan historyResult, 1)
 			hub.historyQuery <- historyRequest{afterID: afterID, limit: limit, reply: reply}
-			msgs := <-reply
+			result := <-reply
+
+			// 查询失败报错
+			if result.err != nil {
+				log.Println("查询历史消息失败:", result.err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "读取历史消息失败"})
+				return
+			}
 
 			// 包一层对象而不是直接返回数组，方便以后加字段。
-			c.JSON(http.StatusOK, gin.H{"messages": msgs})
+			c.JSON(http.StatusOK, gin.H{"messages": result.messages})
 		})
 	}
 
@@ -120,7 +127,7 @@ func serveWS(hub *Hub, c *gin.Context) {
 
 // corsMiddleware 给每个响应补上跨域响应头。
 //
-// 背景：浏览器有同源策略。前端在 5173、后端在 8080，端口不同就算跨域，
+// 浏览器有同源策略。前端在 5173、后端在 8080，端口不同就算跨域，
 // 浏览器会拦掉这个请求。这几个响应头就是服务端在表态
 // "我允许这个跨域请求"，浏览器看到之后才放行。
 func corsMiddleware() gin.HandlerFunc {

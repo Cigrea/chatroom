@@ -150,7 +150,7 @@ func (c *Client) writePump() {
 			if !ok {
 				// send 被关闭了，说明这个客户端被移出了在线列表
 				// 发送关闭帧
-				c.conn.SetWriteDeadline(time.Now().Add(writeWait)) // 写前都应该设写超时，超时会自动关闭连接
+				c.conn.SetWriteDeadline(time.Now().Add(writeWait)) // 写前都应该设写超时
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}

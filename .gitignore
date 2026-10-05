@@ -1,5 +1,10 @@
 *.exe
 node_modules/
 dist/
+# SQLite 数据库文件不进版本库。除了主文件，WAL 模式下还会生成
+# -wal（预写日志，刚写入的数据可能暂时在这里）和 -shm（共享内存索引），
+# 三个是一套，都要忽略掉，否则会把本地数据提交上去。
 *.db
-scripts/ws-check.mjs
+*.db-wal
+*.db-shm
+*.db-journal

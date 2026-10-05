@@ -56,9 +56,22 @@ type chatRequest struct {
 
 // historyRequest 查询历史消息并返回
 type historyRequest struct {
-	afterID int64          // 只要 ID 大于它的
-	limit   int            // 最多几条
-	reply   chan []Message // 结果从这里送回去
+	// 只要 ID 大于它的
+	afterID int64
+
+	// 最多几条
+	limit int
+
+	// 结果从这里送回去
+	reply chan historyResult
+}
+
+// historyResult 是历史查询的结果。
+//
+// 它把"消息"和"查询错误"一起送回去。
+type historyResult struct {
+	messages []Message
+	err      error
 }
 
 // NewHub 创建 Hub 并初始化所有字段。
@@ -95,9 +108,9 @@ func (h *Hub) Run() {
 
 		case req := <-h.historyQuery:
 			// 直接查 store 并把结果送回去。
-			// reply 通道有 1 个缓冲，所以这里不会阻塞——
-			// 万一查询方已经超时走人了，也能立刻脱身。
-			req.reply <- h.store.Since(req.afterID, req.limit)
+			// reply 通道有 1 个缓冲，所以这里不会阻塞。
+			msgs, err := h.store.Since(req.afterID, req.limit)
+			req.reply <- historyResult{messages: msgs, err: err}
 		}
 	}
 }
@@ -111,8 +124,12 @@ func (h *Hub) addClient(c *Client) {
 	// ---- 推送历史消息 ----
 
 	// 历史是一条消息（里面装一个数组），只占用 send 队列的一个位置。
-	// 在刷新、断线重连的情况下，只推送since之后的消息，相当于更新
-	history := h.store.Since(c.since, historyPushLimit)
+	// 在刷新、断线重连的情况下，只推送 since 之后的消息，相当于增量更新。
+	history, err := h.store.Since(c.since, historyPushLimit)
+	if err != nil {
+		log.Println("读取历史消息失败，本次按空历史处理:", err)
+		history = []Message{} // 用非 nil 空切片，序列化出来是 [] 而不是 null
+	}
 
 	// 序列化再交给 send。
 	if payload, err := json.Marshal(outbound{Type: TypeHistory, Messages: history}); err != nil {
@@ -154,7 +171,12 @@ func (h *Hub) removeClient(c *Client) {
 
 // handleChat 处理客户端的信息。
 func (h *Hub) handleChat(req chatRequest) {
-	msg := h.store.Append(req.client.nickname, req.content)
+	msg, err := h.store.Append(req.client.nickname, req.content)
+	if err != nil {
+		// 写库失败就不广播，否则前端与后端消息对不上。
+		log.Println("保存消息失败:", err)
+		return
+	}
 
 	// 广播给自己是要拿到服务端分配的 时间 和 ID
 	h.broadcast(outbound{Type: TypeMessage, Message: &msg})
