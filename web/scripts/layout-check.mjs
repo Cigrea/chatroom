@@ -568,6 +568,460 @@ console.log('=== I. 在线成员很多时，侧栏的「切换昵称」会不会
   await page.close()
 }
 
+console.log('=== J. 界面细节：圆角、时间位置、气泡对比度、标题字号 ===')
+{
+  const page = await browser.newPage()
+  await page.setViewport({ width: 1280, height: 800 })
+  await enter(page, '细节检查')
+
+  // 用一个外部连接发消息。
+  // 发两条：一条是"别人"的（细节甲），一条是"自己"的（昵称和页面一样，
+  // isMine 判断的是昵称相同，所以它会渲染成靠右的"我的气泡"）。
+  const site = await page.evaluate(() => location.origin)
+  async function connect(nickname) {
+    const ws = new WebSocket(`${site.replace(/^http/, 'ws')}/ws?nickname=${encodeURIComponent(nickname)}&since=0`)
+    await new Promise((res, rej) => {
+      ws.addEventListener('open', res)
+      ws.addEventListener('error', () => rej(new Error('连接失败')))
+      setTimeout(() => rej(new Error('超时')), 6000)
+    })
+    return ws
+  }
+
+  const other = await connect('细节甲')
+  const mine = await connect('细节检查')
+
+  // 别人的消息：带一个显式换行，最后一行很短
+  // ——这样就能验证时间落在**第二行**，而不是另起第三行
+  other.send(
+    JSON.stringify({
+      type: 'chat',
+      content: '这是第一行，故意写得长一点用来占满整行看看换行效果如何\n第二行短',
+    }),
+  )
+  await sleep(500)
+  // 自己的消息：单行，验证时间贴在同一行右端
+  mine.send(JSON.stringify({ type: 'chat', content: '好的' }))
+  await sleep(900)
+
+  const m = await page.evaluate(() => {
+    const box = (el) => {
+      const r = el.getBoundingClientRect()
+      return {
+        left: Math.round(r.left),
+        right: Math.round(r.right),
+        top: Math.round(r.top),
+        bottom: Math.round(r.bottom),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
+      }
+    }
+    /**
+     * 取一个元素里**每一行**的矩形。
+     * Range.getClientRects() 会按行盒返回，所以数组最后一个就是最后一行。
+     * 这是判断"时间到底在第几行"的关键工具。
+     */
+    const linesOf = (el) => {
+      const range = document.createRange()
+      range.selectNodeContents(el)
+      return [...range.getClientRects()].map((r) => ({
+        top: Math.round(r.top),
+        bottom: Math.round(r.bottom),
+        left: Math.round(r.left),
+        right: Math.round(r.right),
+      }))
+    }
+    const lum = (rgb) => {
+      const n = rgb.match(/\d+/g)
+      if (!n) return -1
+      const [r, g, b] = n.map(Number)
+      return Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b)
+    }
+
+    const bubbles = [...document.querySelectorAll('.bubble')]
+
+    /*
+     * ★ 不能假设"第 0 个气泡"就是刚发的那条。
+     *   页面加载时会收到历史消息，服务端数据库里可能有很久以前的记录，
+     *   所以必须**按内容**把目标气泡找出来。
+     *   （这正是之前那次误报的原因：量到了一条老消息，它只有一行。）
+     */
+    const findBubble = (needle) =>
+      bubbles.find((b) => b.querySelector('.text')?.textContent?.includes(needle))
+
+    const otherBubble = findBubble('第二行短')
+    const mineBubble = bubbles[bubbles.length - 1]
+
+    const otherText = otherBubble.querySelector('.text')
+    const otherLines = linesOf(otherText)
+
+    return {
+      bubble: box(otherBubble),
+      mineBubble: box(mineBubble),
+      sender: box(otherBubble.querySelector('.sender')),
+      text: box(otherText),
+      time: box(otherBubble.querySelector('.time')),
+      mineTime: box(mineBubble.querySelector('.time')),
+      // 正文每一行的位置
+      lineCount: otherLines.length,
+      lastLine: otherLines[otherLines.length - 1],
+      firstLine: otherLines[0],
+
+      bubbleRadius: getComputedStyle(otherBubble).borderTopLeftRadius,
+      inputRadius: getComputedStyle(document.querySelector('.composer input')).borderTopLeftRadius,
+      buttonRadius: getComputedStyle(document.querySelector('.composer button')).borderTopLeftRadius,
+
+      // 颜色：页面底色 / 别人的气泡 / 自己的气泡
+      pageBg: getComputedStyle(document.body).backgroundColor,
+      bubbleBg: getComputedStyle(otherBubble).backgroundColor,
+      mineBg: getComputedStyle(mineBubble).backgroundColor,
+      bubbleBorder: getComputedStyle(otherBubble).borderTopColor,
+      lumPage: lum(getComputedStyle(document.body).backgroundColor),
+      lumBubble: lum(getComputedStyle(otherBubble).backgroundColor),
+      lumMine: lum(getComputedStyle(mineBubble).backgroundColor),
+
+      h2Font: getComputedStyle(document.querySelector('.sidebar h2')).fontSize,
+      h2Weight: getComputedStyle(document.querySelector('.sidebar h2')).fontWeight,
+      lobbyFont: getComputedStyle(document.querySelector('.chat-head strong')).fontSize,
+      lobbyWeight: getComputedStyle(document.querySelector('.chat-head strong')).fontWeight,
+      contentFont: getComputedStyle(otherText).fontSize,
+    }
+  })
+  console.log('  实测:', JSON.stringify(m))
+
+  const px = (s) => parseFloat(s)
+
+  // ---- 圆角 ----
+  check('气泡圆角足够大（≥ 18px）', px(m.bubbleRadius) >= 18, `border-radius=${m.bubbleRadius}`)
+  check('输入框圆角足够大（≥ 12px）', px(m.inputRadius) >= 12, `border-radius=${m.inputRadius}`)
+  check(
+    '按钮圆角和输入框一致（说明用了同一个令牌）',
+    m.buttonRadius === m.inputRadius,
+    `input=${m.inputRadius} button=${m.buttonRadius}`,
+  )
+
+  // ---- 时间位置：必须在正文最后一行，而不是下一行 ----
+  check('那条消息确实换行了（验证多行场景）', m.lineCount >= 2, `行数=${m.lineCount}`)
+
+  const timeCenter = (m.time.top + m.time.bottom) / 2
+  const lastLineCenter = (m.lastLine.top + m.lastLine.bottom) / 2
+  check(
+    '★ 时间和正文**最后一行**在同一行（垂直位置重合）',
+    m.time.top < m.lastLine.bottom && m.time.bottom > m.lastLine.top,
+    `时间 ${m.time.top}~${m.time.bottom}，最后一行 ${m.lastLine.top}~${m.lastLine.bottom}`,
+  )
+  check(
+    '★ 时间没有跑到最后一行**下面**',
+    m.time.bottom <= m.lastLine.bottom + 2,
+    `时间底部=${m.time.bottom} 最后一行底部=${m.lastLine.bottom}`,
+  )
+  check(
+    '时间和最后一行垂直居中对齐（不是偏上或偏下）',
+    Math.abs(timeCenter - lastLineCenter) <= 6,
+    `时间中心=${Math.round(timeCenter)} 行中心=${Math.round(lastLineCenter)}`,
+  )
+  check(
+    '时间**没有**落在第一行（说明它跟着最后一行走，不是浮在第一行）',
+    m.time.top >= m.firstLine.bottom - 2,
+    `时间顶部=${m.time.top} 第一行底部=${m.firstLine.bottom}`,
+  )
+  check(
+    '时间靠右（右边缘贴近气泡内边）',
+    m.bubble.right - m.time.right < 20,
+    `距右边 ${m.bubble.right - m.time.right}px`,
+  )
+  check('昵称在正文上方', m.sender.bottom <= m.text.top + 2, `sender.bottom=${m.sender.bottom} text.top=${m.text.top}`)
+
+  // 单行的"我的"消息：时间也应该在同一行
+  const mineTimeCenter = (m.mineTime.top + m.mineTime.bottom) / 2
+  const mineBubbleCenter = (m.mineBubble.top + m.mineBubble.bottom) / 2
+  check(
+    '单行消息里时间也在正文那一行（贴近气泡下半部）',
+    mineTimeCenter > mineBubbleCenter,
+    `时间中心=${Math.round(mineTimeCenter)} 气泡中心=${Math.round(mineBubbleCenter)}`,
+  )
+
+  // ---- 气泡与背景的对比度 ----
+  const dPageBubble = Math.abs(m.lumPage - m.lumBubble)
+  const dBubbleMine = Math.abs(m.lumBubble - m.lumMine)
+  console.log(`  亮度: 页面=${m.lumPage} 别人的气泡=${m.lumBubble} 自己的气泡=${m.lumMine}`)
+  check(
+    '★ 气泡和页面底色有明显的亮度差（≥ 8，不再"糊在一起"）',
+    dPageBubble >= 8,
+    `亮度差只有 ${dPageBubble}`,
+  )
+  check(
+    '★ 自己的气泡和别人的气泡也能区分（亮度差 ≥ 6）',
+    dBubbleMine >= 6,
+    `亮度差只有 ${dBubbleMine}`,
+  )
+  check('气泡有可见的描边', m.bubbleBorder !== 'rgba(0, 0, 0, 0)' && m.bubbleBorder !== 'transparent', `border-color=${m.bubbleBorder}`)
+
+  // ---- 标题字号字重 ----
+  check('「在线成员」字号足够大（≥ 15px）', px(m.h2Font) >= 15, `font-size=${m.h2Font}`)
+  check('「在线成员」是加粗的', Number(m.h2Weight) >= 700, `font-weight=${m.h2Weight}`)
+  check('「大厅」字号足够大（≥ 18px）', px(m.lobbyFont) >= 18, `font-size=${m.lobbyFont}`)
+  check('「大厅」是加粗的', Number(m.lobbyWeight) >= 700, `font-weight=${m.lobbyWeight}`)
+  check(
+    '「大厅」明显大于消息正文（区分出信息层级）',
+    px(m.lobbyFont) > px(m.contentFont) + 2,
+    `大厅=${m.lobbyFont} 正文=${m.contentFont}`,
+  )
+
+  await page.screenshot({ path: `${SHOTS}/desktop-bubble-detail.png` })
+
+  // ---- 暗色下也量一遍对比度 ----
+  await page.evaluate(() => localStorage.setItem('chatroom-theme', 'dark'))
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('.app', { timeout: 8000 })
+  await sleep(900)
+  const d = await page.evaluate(() => {
+    const lum = (rgb) => {
+      const n = rgb.match(/\d+/g)
+      if (!n) return -1
+      const [r, g, b] = n.map(Number)
+      return Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b)
+    }
+    const bs = [...document.querySelectorAll('.bubble')]
+    return {
+      lumPage: lum(getComputedStyle(document.body).backgroundColor),
+      lumBubble: lum(getComputedStyle(bs[0]).backgroundColor),
+      lumMine: lum(getComputedStyle(bs[bs.length - 1]).backgroundColor),
+    }
+  })
+  console.log(`  暗色亮度: 页面=${d.lumPage} 别人的气泡=${d.lumBubble} 自己的气泡=${d.lumMine}`)
+  check(
+    '暗色下气泡和页面也有亮度差（≥ 8）',
+    Math.abs(d.lumPage - d.lumBubble) >= 8,
+    `亮度差只有 ${Math.abs(d.lumPage - d.lumBubble)}`,
+  )
+  check(
+    '暗色下自己的气泡也能区分（≥ 8）',
+    Math.abs(d.lumBubble - d.lumMine) >= 8,
+    `亮度差只有 ${Math.abs(d.lumBubble - d.lumMine)}`,
+  )
+  await page.screenshot({ path: `${SHOTS}/desktop-bubble-detail-dark.png` })
+
+  other.close()
+  mine.close()
+  await page.close()
+}
+
+console.log('=== K. 气泡宽度自适应 + 昵称按规则配色 ===')
+{
+  const page = await browser.newPage()
+  await page.setViewport({ width: 1280, height: 800 })
+  await enter(page, '宽度检查')
+
+  const site = await page.evaluate(() => location.origin)
+  async function open(nickname) {
+    const ws = new WebSocket(
+      `${site.replace(/^http/, 'ws')}/ws?nickname=${encodeURIComponent(nickname)}&since=0`,
+    )
+    await new Promise((res, rej) => {
+      ws.addEventListener('open', res)
+      ws.addEventListener('error', () => rej(new Error('连接失败')))
+      setTimeout(() => rej(new Error('超时')), 6000)
+    })
+    return ws
+  }
+
+  // 用【X】做标记，方便按内容精确找到目标气泡
+  // （页面会加载历史消息，不能靠下标定位）
+  const people = ['甲某', '乙某', '丙某', '丁某', '戊某']
+  const sockets = []
+  for (const p of people) sockets.push(await open(p))
+
+  sockets[0].send(JSON.stringify({ type: 'chat', content: '【A1】短' }))
+  await sleep(300)
+  sockets[1].send(JSON.stringify({ type: 'chat', content: '【B1】' + '这是一条很长的消息'.repeat(6) }))
+  await sleep(300)
+  sockets[0].send(JSON.stringify({ type: 'chat', content: '【A2】同一个人再发一条' }))
+  await sleep(300)
+  sockets[2].send(JSON.stringify({ type: 'chat', content: '【C1】三个人' }))
+  await sleep(300)
+  sockets[3].send(JSON.stringify({ type: 'chat', content: '【D1】四个人' }))
+  await sleep(300)
+  sockets[4].send(JSON.stringify({ type: 'chat', content: '【E1】五个人' }))
+  await sleep(900)
+
+  const m = await page.evaluate((names) => {
+    const bubbles = [...document.querySelectorAll('.bubble')]
+    const find = (needle) =>
+      bubbles.find((b) => b.querySelector('.text')?.textContent?.includes(needle))
+
+    /** 取一个元素的宽度、昵称文字和昵称颜色（计算后的 rgb） */
+    const info = (el) => {
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      const senderEl = el.querySelector('.sender')
+      return {
+        width: Math.round(r.width),
+        sender: senderEl?.textContent?.trim(),
+        color: senderEl ? getComputedStyle(senderEl).color : null,
+      }
+    }
+
+    /**
+     * 在页面里**复现**前端的哈希规则，用来验证"颜色确实是按这个规则算出来的"，
+     * 而不只是"颜色看起来有区别"。
+     *
+     * ★ 这段必须和 App.vue 里的 nameColor 保持一致。
+     *   改了那边就要改这边，否则测试会失败——这其实是好事，
+     *   等于强迫两边同步。
+     */
+    const hashIndex = (name) => {
+      // FNV-1a
+      let hash = 2166136261
+      for (let i = 0; i < name.length; i++) {
+        hash ^= name.charCodeAt(i)
+        hash = Math.imul(hash, 16777619) >>> 0
+      }
+      // murmur3 雪崩混洗。
+      // 每步末尾的 >>> 0 不能漏：JS 的 ^ 返回带符号整数，
+      // 漏了的话哈希可能是负数，取余也是负数，会拼出不存在的变量名。
+      hash = (hash ^ (hash >>> 16)) >>> 0
+      hash = Math.imul(hash, 0x85ebca6b) >>> 0
+      hash = (hash ^ (hash >>> 13)) >>> 0
+      hash = Math.imul(hash, 0xc2b2ae35) >>> 0
+      hash = (hash ^ (hash >>> 16)) >>> 0
+      return hash % 8
+    }
+
+    const expectedColor = (name) => {
+      const index = hashIndex(name) + 1
+      // 把 var(--name-N) 借一个临时元素解析成实际的 rgb，方便和计算样式比较
+      const tmp = document.createElement('div')
+      tmp.style.color = `var(--name-${index})`
+      document.body.appendChild(tmp)
+      const rgb = getComputedStyle(tmp).color
+      tmp.remove()
+      return { index, rgb }
+    }
+
+    /*
+     * 分散度检验：用一批合成昵称看哈希能不能铺满 8 个色号。
+     *
+     * 为什么要单独测这个：**光看"5 个人有 2 种颜色"是不够的**——
+     * 那可能只是碰巧，也可能说明哈希质量真的差。
+     * 之前用 `hash*31+字符` 那种写法时，5 个昵称有 3 个撞在同一个色号上，
+     * 就是因为低位没混匀。铺满度能直接把这个质量问题量出来。
+     */
+    const spread = (() => {
+      const used = new Set()
+      const outOfRange = []
+      const add = (name) => {
+        const i = hashIndex(name)
+        used.add(i)
+        // 独立检查"索引有没有越界"。
+        // 这一条不能靠"复现实现的测试"来发现——因为两边会一样错。
+        // 之前 `^` 漏了 >>> 0 导致哈希为负、索引变成 -3，
+        // 就是靠把越界情况收集出来才定位到的。
+        if (!Number.isInteger(i) || i < 0 || i >= 8) outOfRange.push({ name, i })
+      }
+
+      // 常见姓氏的单字昵称
+      for (const c of '赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜') {
+        add(c)
+      }
+      // "某某"式两字昵称
+      for (const c of '赵钱孙李周吴郑王冯陈褚卫蒋沈韩') add(c + '某')
+      // "用户N"式昵称
+      for (let i = 0; i < 60; i++) add('用户' + i)
+
+      return { distinct: used.size, outOfRange }
+    })()
+
+    const chatWidth = Math.round(document.querySelector('.chat').getBoundingClientRect().width)
+
+    return {
+      chatWidth,
+      spread,
+      short: info(find('【A1】')),
+      long: info(find('【B1】')),
+      shortAgain: info(find('【A2】')),
+      others: ['【C1】', '【D1】', '【E1】'].map((k) => info(find(k))),
+      expected: Object.fromEntries(names.map((n) => [n, expectedColor(n)])),
+    }
+  }, people)
+
+  console.log('  实测:', JSON.stringify(m, null, 0))
+
+  // ---- 气泡宽度自适应 ----
+  check('短消息的气泡明显更窄', m.short && m.short.width < m.long.width * 0.5, `短=${m.short?.width} 长=${m.long?.width}`)
+  check('短消息气泡没有被撑到最宽', m.short && m.short.width < m.chatWidth * 0.5, `短=${m.short?.width} 聊天区宽=${m.chatWidth}`)
+  check('长消息气泡被 max-width 夹住（不超过聊天区的 72%）', m.long && m.long.width <= m.chatWidth * 0.72, `长=${m.long?.width} 聊天区宽=${m.chatWidth}`)
+  check('短消息气泡没有退化到挤不下内容（> 30px）', m.short && m.short.width > 30, `短=${m.short?.width}`)
+
+  // ---- 昵称配色 ----
+  const expectedOf = (name) => m.expected[name]?.rgb
+
+  check(
+    '★ 哈希索引没有越界（都在 0~7 范围内）',
+    m.spread.outOfRange.length === 0,
+    `越界的: ${JSON.stringify(m.spread.outOfRange.slice(0, 5))}`,
+  )
+  check(
+    '★ 哈希能铺满全部 8 个色号（分散度够，昵称不会扎堆同色）',
+    m.spread.distinct === 8,
+    `只用到 ${m.spread.distinct} 个色号`,
+  )
+
+  check(
+    '★ 昵称的颜色和哈希规则算出来的一致（甲某）',
+    m.short?.color === expectedOf('甲某'),
+    `实际=${m.short?.color} 规则算出=${expectedOf('甲某')}`,
+  )
+  check(
+    '★ 同一个昵称再发一条，颜色不变（色号稳定）',
+    m.shortAgain?.color === m.short?.color,
+    `第一条=${m.short?.color} 第二条=${m.shortAgain?.color}`,
+  )
+  check(
+    '★ 五个不同昵称至少用到 2 种颜色（能区分不同的人）',
+    new Set([m.short?.color, m.long?.color, ...m.others.map((o) => o?.color)]).size >= 2,
+    `用到的颜色: ${JSON.stringify([m.short?.color, m.long?.color, ...m.others.map((o) => o?.color)])}`,
+  )
+
+  // 逐个核对每个昵称的颜色
+  const pairs = [
+    ['乙某', m.long],
+    ['丙某', m.others[0]],
+    ['丁某', m.others[1]],
+    ['戊某', m.others[2]],
+  ]
+  for (const [name, got] of pairs) {
+    check(
+      `昵称「${name}」的颜色符合哈希规则`,
+      got?.color === expectedOf(name),
+      `实际=${got?.color} 规则算出=${expectedOf(name)}`,
+    )
+  }
+
+  // ---- 暗色下也核对一遍（颜色应该跟着主题变） ----
+  await page.evaluate(() => localStorage.setItem('chatroom-theme', 'dark'))
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('.app', { timeout: 8000 })
+  await sleep(1000)
+  const dark = await page.evaluate(() => {
+    const el = [...document.querySelectorAll('.bubble')].find((b) =>
+      b.querySelector('.text')?.textContent?.includes('【A1】'),
+    )
+    const s = el?.querySelector('.sender')
+    return { color: s ? getComputedStyle(s).color : null }
+  })
+  check(
+    '暗色下昵称换了另一套颜色（说明颜色交给了 CSS 变量管）',
+    dark.color !== null && dark.color !== m.short?.color,
+    `亮色=${m.short?.color} 暗色=${dark.color}`,
+  )
+
+  await page.screenshot({ path: `${SHOTS}/desktop-name-colors.png` })
+
+  sockets.forEach((s) => s.close())
+  await page.close()
+}
+
 await browser.close()
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`)
 console.log(`截图已保存到 ${SHOTS}`)

@@ -77,6 +77,72 @@ function isMine(sender: string): boolean {
   return sender === nickname.value
 }
 
+/** 昵称配色的数量，和 style.css 里 --name-1 ~ --name-8 对应 */
+const NAME_COLOR_COUNT = 8
+
+/**
+ * 按昵称算出一个稳定的颜色，用来给气泡左上角的昵称上色。
+ *
+ * 为什么需要它：一个聊天室里有好几个人时，光看昵称文字很难一眼分清谁是谁，
+ * 上了色之后扫一眼就能区分。
+ *
+ * 两条规则：
+ *   1. **同一个昵称永远得到同一个颜色。** 靠的是"哈希"——
+ *      把昵称的每个字符揉成一个数，只要昵称不变，算出来的数就不变，
+ *      所以刷新页面、断线重连之后颜色都还是那个。
+ *   2. 不同昵称尽量落到不同颜色上。
+ *
+ * 注意这里返回的是 `var(--name-N)` 而不是具体色值。
+ * 因为亮色和暗色需要不同深浅的同一色相，把"具体是什么颜色"交给 CSS 变量决定，
+ * 换主题时名字颜色会自动跟着变，这个函数完全不用知道当前是亮还是暗。
+ */
+function nameColor(sender: string): string {
+  /*
+   * 第一步：FNV-1a 哈希，把昵称揉成一个 32 位整数。
+   *
+   * 乘数 16777619 和初值 2166136261 是 FNV-1a 的标准参数，
+   * 它比"hash * 31 + 字符"那种写法分散得更均匀。
+   * Math.imul 是 32 位整数乘法（普通 * 会在超过 2^53 后丢精度）。
+   */
+  let hash = 2166136261
+  for (let i = 0; i < sender.length; i++) {
+    hash ^= sender.charCodeAt(i)
+    hash = Math.imul(hash, 16777619) >>> 0
+  }
+
+  /*
+   * 第二步：雪崩混洗（murmur3 的收尾步骤）。
+   *
+   * ★ 这一步不能省，而且是有原因的：
+   *
+   *   哈希的最后往往要"对颜色数量取余"，而**取余只看低位**。
+   *   可是上面算出来的低位，主要由输入的最后几个字符决定——
+   *   昵称都是"某某"这种两三个汉字时，低位的变化范围很窄，
+   *   结果就是好几个人撞到同一个颜色上。
+   *
+   *   （改之前实测：5 个昵称只用到 2 种颜色，3 个人同色。）
+   *
+   *   这几次"异或 + 乘法"的作用是让**输入的每一位都影响到输出的低位**，
+   *   也就是所谓雪崩效应：输入改一个字符，整个哈希看起来完全不同。
+   *
+   * ★★ 每一行末尾的 `>>> 0` 不是可有可无的：
+   *
+   *   JavaScript 的位运算（`^`、`<<`、`>>`）操作的是**带符号** 32 位整数，
+   *   结果可能是负数。而负数取余也是负数，比如 -3 % 8 = -3，
+   *   于是会拼出 `var(--name--3)` 这种根本不存在的变量名，
+   *   颜色就回落到兜底值——表现出来就是"好几个人的名字都是灰的"。
+   *
+   *   `>>> 0` 是无符号右移 0 位，作用是把它转回 0 ~ 2^32-1 的无符号整数。
+   */
+  hash = (hash ^ (hash >>> 16)) >>> 0
+  hash = Math.imul(hash, 0x85ebca6b) >>> 0
+  hash = (hash ^ (hash >>> 13)) >>> 0
+  hash = Math.imul(hash, 0xc2b2ae35) >>> 0
+  hash = (hash ^ (hash >>> 16)) >>> 0
+
+  return `var(--name-${(hash % NAME_COLOR_COUNT) + 1})`
+}
+
 /**
  * 提交发送。
  *
@@ -217,11 +283,23 @@ watch(
           <!-- 聊天消息：气泡 -->
           <div v-else class="row" :class="{ mine: isMine(item.message.sender) }">
             <div class="bubble">
-              <div class="meta">
-                <span class="sender">{{ item.message.sender }}</span>
+              <!-- 昵称在最上面一行，按昵称哈希上色，方便区分不同的人 -->
+              <div class="sender" :style="{ color: nameColor(item.message.sender) }">
+                {{ item.message.sender }}
+              </div>
+
+              <!--
+                正文 + 时间。
+
+                时间**故意**写在正文里面、紧跟正文之后，而不是单独一个 div。
+                因为 CSS 的 float 是「放在它出现的位置所在的那一行」——
+                写在正文后面，它就会贴在**最后一行**的右端；
+                如果单独占一行，那就变成"在文本下一行"了（那是上一版的写法）。
+              -->
+              <div class="content">
+                <span class="text">{{ item.message.content }}</span>
                 <span class="time">{{ formatTime(item.message.createdAt) }}</span>
               </div>
-              <div class="content">{{ item.message.content }}</div>
             </div>
           </div>
         </template>
@@ -291,8 +369,16 @@ watch(
    */
   overflow: hidden;
 }
+/*
+ * 侧栏标题「在线成员」。
+ *
+ * h2 默认就是粗体，但 14px 太小、在侧栏里看着像普通文字。
+ * 调到 15px + 明确写 700 字重，让它一眼看上去就是个"区块标题"。
+ */
 .sidebar h2 {
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
   margin: 0 0 4px;
 }
 .member-list {
@@ -325,8 +411,8 @@ watch(
   font-size: 11px;
   color: var(--tag-text);
   background: var(--tag-bg);
-  border-radius: 4px;
-  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
 }
 /* 切换昵称：低调的文字按钮，不跟在线列表抢注意力 */
 .leave-btn {
@@ -338,6 +424,7 @@ watch(
   color: var(--text-muted);
   background: transparent;
   border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 .leave-btn:hover {
   color: var(--text);
@@ -369,6 +456,19 @@ watch(
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/*
+ * 大厅标题「大厅」。
+ *
+ * 它是用 <strong> 包着的，默认就是粗体，但字号继承自 body（16px），
+ * 放在顶栏里不够像"标题"。这里调大到 18px 并把字重写实，
+ * 让它和下面的消息正文明显区分开。
+ */
+.chat-head strong {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
 }
 
 /* 右上角：连接状态 + 主题按钮 */
@@ -421,7 +521,7 @@ watch(
   color: var(--text-muted);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 .icon-btn:hover {
   color: var(--text);
@@ -455,39 +555,76 @@ watch(
   flex-direction: column;
   gap: 10px;
 }
-/* 自己的消息靠右：flex 容器里给单个子元素 justify-content 就能推到最右 */
-.row.mine {
+/*
+ * 每一行消息。
+ *
+ * ★ 这里**两个**状态都必须是 flex，不能只给 .mine 加。
+ *
+ *   气泡要"跟着文字长短自适应宽度"，前提是它得是一个 flex 子项——
+ *   flex 子项的宽度默认是 fit-content（收缩到内容宽度，再被 max-width 夹住）。
+ *
+ *   如果 .row 是普通块级元素，里面的 .bubble 就是块级 div，宽度 auto
+ *   会直接撑满整行（最后顶到 max-width:70%），
+ *   于是不管发言多短，气泡都是一样宽——这就是之前那个 bug。
+ */
+.row {
   display: flex;
+}
+
+/* 自己的消息靠右（默认是 flex-start，也就是靠左） */
+.row.mine {
   justify-content: flex-end;
 }
 .bubble {
   max-width: 70%;
   background: var(--bg-bubble);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 12px;
+  /*
+   * 用专门的气泡描边色，而不是通用的 --border。
+   * 因为气泡需要比普通分隔线更"实"一点的描边，
+   * 才能和页面背景拉开区分度；而 --border 是给顶栏底栏那些细线用的。
+   */
+  border: 1px solid var(--border-bubble);
+  /*
+   * 气泡用最大的那档圆角。
+   * 这里走变量而不是写死数值，是为了「整体再圆一点」时只改 style.css 一处。
+   */
+  border-radius: var(--radius-lg);
+  /* 上下留白对称，因为时间已经并进正文那一行了，不再是独立的一行 */
+  padding: 9px 14px;
 }
 .row.mine .bubble {
   background: var(--bg-bubble-mine);
 }
-.meta {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  margin-bottom: 3px;
-}
+
+/*
+ * 昵称：气泡里的第一行，小一号、加粗。
+ *
+ * 颜色不在这里写死——模板上绑定了 :style="{ color: nameColor(...) }"，
+ * 按昵称哈希出一个 --name-N 变量。
+ * 下面这行只是兜底：万一样式绑定没生效，也不会变成难看的默认黑色。
+ */
 .sender {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text);
+  color: var(--text-sender);
+  margin-bottom: 2px;
 }
-.time {
-  font-size: 11px;
-  color: var(--text-muted);
-}
+
+/*
+ * 正文容器。
+ *
+ * 行高写成**固定的 21px**（= 14px × 1.5），而不是 line-height: 1.5。
+ * 因为下面那个浮动的时间要"和正文最后一行处在同一个行盒里"，
+ * 它必须用一个**可比较的**行高值。写死一个像素值，
+ * 时间那边就能写同样一个值，两边的行盒高度一致，基线自然对齐。
+ */
 .content {
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 21px;
+}
+
+/* 真正的消息文本 */
+.text {
   white-space: pre-wrap; /* 保留用户输入的换行 */
   /*
    * 一串没有空格的超长字符串（比如一条长链接）会把气泡撑破，
@@ -495,6 +632,33 @@ watch(
    * overflow-wrap:anywhere 允许在任意位置断行。
    */
   overflow-wrap: anywhere;
+}
+
+/*
+ * 时间。
+ *
+ * ★ 用 float:right，而不是 text-align:right。
+ *
+ *   关键在**它写在正文后面**（见模板）：块级元素上的 float 会"浮在
+ *   它出现位置所在的那一行"，所以它会贴在**正文最后一行的右端**，
+ *   而不是另起一行——这正是"和文本下部对齐"的效果。
+ *
+ *   如果把它写成独立的 div（上一版的做法），它就必然占一整行，
+ *   看起来就是"时间在文本下一行"。
+ *
+ *   line-height 和上面 .content 保持一致，是为了让它和正文处在同一个
+ *   行盒里、基线对齐；不然它会贴到行盒顶部，比正文偏高。
+ *
+ *   字号比正文更小、颜色更淡——它属于"元信息"，不该跟正文抢注意力。
+ */
+.time {
+  float: right;
+  margin-left: 12px;
+  font-size: 11px;
+  line-height: 21px;
+  color: var(--text-muted);
+  /* 不让时间被拆成两行（比如 "12:34" 断成 "12:" 和 "34"） */
+  white-space: nowrap;
 }
 /* 系统提示 */
 .system {
@@ -548,7 +712,7 @@ watch(
   width: min(340px, 100%);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   padding: 26px;
   box-shadow: var(--shadow);
 }

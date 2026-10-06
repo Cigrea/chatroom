@@ -16,19 +16,61 @@
   /* 背景 */
   --bg: #ffffff; /* 页面底色 */
   --bg-panel: #f7f9fb; /* 侧栏等面板 */
-  --bg-bubble: #ffffff; /* 别人的消息气泡 */
-  --bg-bubble-mine: #e8f2ff; /* 自己的消息气泡 */
+  /*
+   * 消息气泡。
+   *
+   * ★ 别人的气泡原来是纯白 #ffffff，和页面底色**完全一样**，
+   *   只靠一根 1px 细边框区分——看起来就像"没有气泡"。
+   *   现在改成浅灰，和白色页面拉开一档亮度差，一眼就能看出边界在哪。
+   *
+   *   自己的气泡用浅蓝：于是三种颜色形成清晰的层级
+   *   页面(白) < 别人的(浅灰) < 自己的(浅蓝)，同时"谁发的"也一眼可分。
+   */
+  --bg-bubble: #eef1f5; /* 别人的消息气泡：浅灰 */
+  --bg-bubble-mine: #d8e8ff; /* 自己的消息气泡：浅蓝 */
   --bg-danger: #fdecea; /* 错误条 */
 
   /* 边框 */
   --border: #e3e8ee;
   --border-strong: #d5dce4; /* 输入框 */
   --border-focus: #4a90e2;
+  /*
+   * 气泡专用的描边色。
+   * 比 --border 稍深一点：气泡需要有明确的轮廓，
+   * 而 --border 是给顶栏/底栏那种"轻轻一条分隔线"用的，两者诉求不同。
+   */
+  --border-bubble: #dde2ea;
 
   /* 文字 */
   --text: #2b3a4a;
   --text-muted: #8b98a5;
   --text-faint: #98a4b0; /* 系统提示那种更淡的字 */
+  --text-sender: #2b3a4a; /* 气泡里昵称的兜底色，正常情况下会被 --name-N 覆盖 */
+
+  /*
+   * 昵称配色（8 色）。
+   *
+   * 前端按昵称算一个哈希值，从中挑一个用。于是：
+   *   - 同一个人永远是同一个颜色（刷新、断线重连都不会变）
+   *   - 不同的人尽量落到不同颜色上
+   *
+   * ★ 为什么放在 CSS 变量里，而不是直接写死在 JS 里？
+   *
+   *   因为亮色和暗色需要的"鲜艳程度"完全不同：
+   *   亮色背景上要用**深**一点的颜色才看得清，
+   *   暗色背景上要用**亮**一点的，否则糊在背景里。
+   *
+   *   写成变量之后，JS 只负责说"用 3 号色"，具体是什么颜色交给当前主题决定。
+   *   前端逻辑完全不需要知道现在是不是暗色——换主题时名字颜色自动跟着变。
+   */
+  --name-1: #c2410c;
+  --name-2: #15803d;
+  --name-3: #1d4ed8;
+  --name-4: #a21caf;
+  --name-5: #be123c;
+  --name-6: #0f766e;
+  --name-7: #b45309;
+  --name-8: #6d28d9;
 
   /* 主色与状态色 */
   --accent: #4a90e2;
@@ -54,17 +96,33 @@
 [data-theme='dark'] {
   --bg: #131720;
   --bg-panel: #1a1f2b;
-  --bg-bubble: #1e2430;
-  --bg-bubble-mine: #24384f;
+  /* 暗色下气泡本来就和页面底色有差，这里再拉开一点，和亮色保持同样的层级 */
+  --bg-bubble: #212836; /* 别人的：比页面亮一档 */
+  --bg-bubble-mine: #2b4a6e; /* 自己的：更明显偏蓝 */
   --bg-danger: #3a1f1c;
 
   --border: #2b3242;
   --border-strong: #3a4356;
   --border-focus: #5ba3f5;
+  --border-bubble: #333d4f; /* 气泡描边，比 --border 稍亮 */
 
   --text: #e6e9ef;
   --text-muted: #8b98a5;
   --text-faint: #6b7684;
+  --text-sender: #e6e9ef;
+
+  /*
+   * 暗色下的昵称配色。
+   * 用的是同一套色相，但整体调亮——深色在暗色气泡上根本看不清。
+   */
+  --name-1: #fb923c;
+  --name-2: #4ade80;
+  --name-3: #60a5fa;
+  --name-4: #e879f9;
+  --name-5: #fb7185;
+  --name-6: #2dd4bf;
+  --name-7: #fbbf24;
+  --name-8: #a78bfa;
 
   --accent: #4a90e2;
   --accent-fg: #ffffff;
@@ -84,6 +142,23 @@
      滚动条、输入框、自动填充这些"浏览器自己画的东西"也会跟着变暗。
      不加的话暗色页面里会突兀地出现一条亮色滚动条。 */
   color-scheme: dark;
+}
+
+/* ---------------- 尺寸令牌 ---------------- */
+
+/*
+ * 圆角统一在这里定义，和上面颜色变量是同一个思路。
+ *
+ * 好处有两个：
+ *   1. 想让整体"再圆一点"，只改这三个数就够了，不用去每个组件里找 border-radius
+ *   2. 保证同类元素的圆角一致——手写的时候很容易这个 8px 那个 10px，看着就杂
+ *
+ * 这几个值是不分主题的，所以单独放在 :root 里，不跟亮暗两套混在一起。
+ */
+:root {
+  --radius-sm: 9px; /* 小元素：标签、徽章 */
+  --radius-md: 14px; /* 中等：输入框、按钮、图标按钮 */
+  --radius-lg: 20px; /* 大块：消息气泡、卡片 */
 }
 
 /* ---------------- 基础样式 ---------------- */
@@ -118,9 +193,9 @@ button {
 }
 
 input {
-  padding: 9px 12px;
+  padding: 10px 14px;
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   outline: none;
   color: var(--text);
   background: var(--bg);
@@ -139,9 +214,9 @@ input:focus {
 }
 
 button {
-  padding: 9px 18px;
+  padding: 10px 18px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--accent);
   color: var(--accent-fg);
   cursor: pointer;
