@@ -35,8 +35,19 @@ export function useChat() {
   /** 昵称。初始值从 localStorage 读，实现"下次打开自动填上" */
   const nickname = ref(localStorage.getItem(NICKNAME_KEY) ?? '')
 
-  /** 是否已经进入聊天室（false 时显示昵称输入卡片） */
-  const joined = ref(false)
+  /**
+   * 是否已经进入聊天室（false 时显示昵称输入卡片）。
+   *
+   * ★ 初始值直接从"本地有没有存过昵称"推导出来，而不是写死 false。
+   *
+   *   这样**刷新页面会直接回到聊天界面**，不用再点一次"进入"。
+   *   这一点很重要：题目要求"刷新页面后记录还在"，而如果刷新完还得
+   *   重新输昵称、重新进入，那体验上就不像"记录还在"，倒像"重新登录"。
+   *
+   *   在初始化时就定好、而不是等 onMounted 里再设，是为了避免
+   *   第一帧先闪一下昵称输入页再跳回来。
+   */
+  const joined = ref(nickname.value !== '')
 
   /** 消息列表（聊天消息 + 系统提示，按到达顺序混排） */
   const items = ref<ChatItem[]>([])
@@ -272,8 +283,31 @@ export function useChat() {
     localStorage.setItem(NICKNAME_KEY, name)
     joined.value = true
     errorText.value = ''
+
+    // 注意要解掉这个标志：如果是"切换昵称"之后再进来的，
+    // 之前 leaveChat 已经把它设成 true 了，不解掉的话下面 connect()
+    // 一旦断开就不会再重连。
+    closedByUs = false
+
     connect()
     return true
+  }
+
+  /**
+   * 退出聊天室，回到昵称输入页，并清掉本地存的昵称。
+   *
+   * 为什么需要这个方法：因为刷新后会自动进入，如果还想用**另一个昵称**
+   * 进来（比如演示时开两个窗口互相聊天），就必须要有个出口。
+   *
+   * 它不去清空 items：同一个聊天室，换个昵称回来还能接着看刚才的记录，
+   * 清掉反而像是"换了个人就看不到历史"。
+   */
+  function leaveChat(): void {
+    localStorage.removeItem(NICKNAME_KEY)
+    disconnect() // 主动断开，并且不会再触发自动重连
+    joined.value = false
+    nickname.value = ''
+    members.value = []
   }
 
   /**
@@ -306,6 +340,10 @@ export function useChat() {
   // （热更新时组件会重新挂载，而模块级变量和 let 变量的值会被保留）。
   onMounted(() => {
     closedByUs = false
+
+    // 本地存过昵称的话，joined 初始化时就是 true，
+    // 挂载后立刻连上，用户不用做任何操作。
+    if (joined.value) connect()
   })
 
   // 组件卸载（页面关闭、或热更新替换组件）时主动断开，
@@ -322,6 +360,7 @@ export function useChat() {
     errorText,
     // 方法
     join,
+    leaveChat,
     send,
     disconnect,
   }

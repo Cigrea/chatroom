@@ -1,7 +1,92 @@
 /*
- * 全局基础样式。
- * 组件自己的样式写在各自 App.vue 的 <style scoped> 里。
+ * 全局样式 + 主题变量。
+ *
+ * ★★ 所有颜色都定义成 CSS 变量，组件里只用 var(--xxx) 引用。 ★★
+ *
+ *    这样做的好处是：加暗色模式只需要在下面再写一段 [data-theme='dark']
+ *    覆盖变量，组件样式**一行都不用改**。
+ *
+ *    所以有一条纪律：**组件里不要出现写死的颜色值**。
+ *    想加一种新颜色，先在这里定义变量。
  */
+
+/* ---------------- 亮色（默认） ---------------- */
+:root,
+[data-theme='light'] {
+  /* 背景 */
+  --bg: #ffffff; /* 页面底色 */
+  --bg-panel: #f7f9fb; /* 侧栏等面板 */
+  --bg-bubble: #ffffff; /* 别人的消息气泡 */
+  --bg-bubble-mine: #e8f2ff; /* 自己的消息气泡 */
+  --bg-danger: #fdecea; /* 错误条 */
+
+  /* 边框 */
+  --border: #e3e8ee;
+  --border-strong: #d5dce4; /* 输入框 */
+  --border-focus: #4a90e2;
+
+  /* 文字 */
+  --text: #2b3a4a;
+  --text-muted: #8b98a5;
+  --text-faint: #98a4b0; /* 系统提示那种更淡的字 */
+
+  /* 主色与状态色 */
+  --accent: #4a90e2;
+  --accent-fg: #ffffff; /* 主色按钮上的文字 */
+  --accent-disabled: #b9cbdd;
+  --ok: #34c759;
+  --ok-text: #1a7f37;
+  --warn: #e3b341;
+  --warn-text: #9a6700;
+  --danger: #d93025;
+  --danger-text: #b42318;
+
+  /* 其他 */
+  --tag-bg: #e3e8ee;
+  --tag-text: #5b6b7c;
+  --shadow: 0 6px 24px rgba(20, 40, 60, 0.06);
+
+  /* 告诉浏览器这是亮色主题 */
+  color-scheme: light;
+}
+
+/* ---------------- 暗色 ---------------- */
+[data-theme='dark'] {
+  --bg: #131720;
+  --bg-panel: #1a1f2b;
+  --bg-bubble: #1e2430;
+  --bg-bubble-mine: #24384f;
+  --bg-danger: #3a1f1c;
+
+  --border: #2b3242;
+  --border-strong: #3a4356;
+  --border-focus: #5ba3f5;
+
+  --text: #e6e9ef;
+  --text-muted: #8b98a5;
+  --text-faint: #6b7684;
+
+  --accent: #4a90e2;
+  --accent-fg: #ffffff;
+  --accent-disabled: #35455c;
+  --ok: #34c759;
+  --ok-text: #4ade80;
+  --warn: #e3b341;
+  --warn-text: #e3b341;
+  --danger: #ff6b5e;
+  --danger-text: #ff8a80;
+
+  --tag-bg: #2b3242;
+  --tag-text: #9fb0c4;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+
+  /* 这行很重要：它让浏览器知道当前是暗色主题，
+     滚动条、输入框、自动填充这些"浏览器自己画的东西"也会跟着变暗。
+     不加的话暗色页面里会突兀地出现一条亮色滚动条。 */
+  color-scheme: dark;
+}
+
+/* ---------------- 基础样式 ---------------- */
 
 * {
   box-sizing: border-box;
@@ -11,8 +96,20 @@ body {
   margin: 0;
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
-  color: #2b3a4a;
-  background: #fff;
+  /* 用变量而不是写死颜色，切换主题时它自己就跟着变了 */
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* 主题切换时给一个很短的过渡，避免颜色"啪"地跳一下。
+   只过渡颜色相关属性，不要写 all——那会连布局变化也一起过渡，很卡。 */
+body,
+input,
+button {
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease;
 }
 
 input,
@@ -22,25 +119,35 @@ button {
 
 input {
   padding: 9px 12px;
-  border: 1px solid #d5dce4;
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
   outline: none;
+  color: var(--text);
+  background: var(--bg);
+  /*
+   * ★ iOS Safari 有个坑：输入框的字体小于 16px 时，一聚焦它就把整个页面放大，
+   *   而且放大之后不会自动缩回去，用户得手动双指缩放，体验很差。
+   *   显式写 16px 就是为了避开这个自动放大。
+   *
+   * 同时 16px 也是触屏上比较舒服的输入字号，不是为了妥协才这么写的。
+   */
+  font-size: 16px;
 }
 
 input:focus {
-  border-color: #4a90e2;
+  border-color: var(--border-focus);
 }
 
 button {
   padding: 9px 18px;
   border: none;
   border-radius: 8px;
-  background: #4a90e2;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-fg);
   cursor: pointer;
 }
 
 button:disabled {
-  background: #b9cbdd;
+  background: var(--accent-disabled);
   cursor: not-allowed;
 }

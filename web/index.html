@@ -3,8 +3,43 @@
   <head>
     <meta charset="UTF-8">
     <link rel="icon" href="/favicon.ico">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#ffffff">
     <title>轻量聊天室</title>
+    <script>
+      /*
+       * 在 Vue 启动之前，先把主题定下来。
+       *
+       * ★ 这段脚本必须同步执行（所以不能写成 type="module"，那是异步的），
+       *   而且要在 <body> 渲染之前跑完。
+       *
+       *   否则会看到一个很短的"先亮色、再啪地跳成暗色"的闪烁：
+       *   因为 CSS 默认是亮色，要等 JS 加载并执行完才切成暗色，
+       *   中间那几十毫秒用户是能看见的。这是所有做暗色模式的网站都会遇到的问题。
+       *
+       * ★ 这里的判断逻辑必须和 src/useTheme.ts 里的 resolveInitialTheme 完全一致，
+       *   两处不一致就会出现"首帧一个主题、之后又变成另一个"的闪烁。
+       */
+      ;(function () {
+        try {
+          var saved = localStorage.getItem('chatroom-theme')
+          var theme =
+            saved === 'light' || saved === 'dark'
+              ? saved
+              : window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+
+          document.documentElement.dataset.theme = theme
+
+          // 顺便告诉浏览器/手机状态栏该用什么颜色
+          var meta = document.querySelector('meta[name="theme-color"]')
+          if (meta) meta.setAttribute('content', theme === 'dark' ? '#131720' : '#ffffff')
+        } catch (e) {
+          // localStorage 被禁用（比如隐私模式）时保持默认亮色，不影响使用
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>
