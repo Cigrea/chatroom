@@ -1,0 +1,46 @@
+/*
+ * 全局基础样式。
+ * 组件自己的样式写在各自 App.vue 的 <style scoped> 里。
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+  color: #2b3a4a;
+  background: #fff;
+}
+
+input,
+button {
+  font: inherit;
+}
+
+input {
+  padding: 9px 12px;
+  border: 1px solid #d5dce4;
+  border-radius: 8px;
+  outline: none;
+}
+
+input:focus {
+  border-color: #4a90e2;
+}
+
+button {
+  padding: 9px 18px;
+  border: none;
+  border-radius: 8px;
+  background: #4a90e2;
+  color: #fff;
+  cursor: pointer;
+}
+
+button:disabled {
+  background: #b9cbdd;
+  cursor: not-allowed;
+}
