@@ -4,8 +4,6 @@
  *
  * 这个组件**只负责显示**：所有连接、重连、消息状态的逻辑都在 useChat.ts 里。
  * 想改网络行为去改那个文件，想改长相改这里。
- *
- * 也没有拆子组件——一个页面而已，拆开只会让答辩时多一个文件要解释。
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { useChat } from './useChat'
