@@ -9,8 +9,6 @@ import "time"
 // Message 是一条聊天消息。
 type Message struct {
 	// ID 是服务端分配的自增编号，前端拿它做两件事：
-	//  - 消息去重
-	//  - 断线重连时告诉服务端自己的最大ID，只要更新的
 	ID int64 `json:"id"`
 
 	// Sender 是发送者的昵称。
@@ -19,14 +17,11 @@ type Message struct {
 	// Content 是消息正文。
 	Content string `json:"content"`
 
-	// CreatedAt 由服务端决定，不接受前端传上来的时间。
+	// CreatedAt 是消息发送的时间，由服务端决定。
 	CreatedAt time.Time `json:"createdAt"`
 }
 
 // 前后端约定的消息类型，放在 JSON 的 type 字段里。
-//
-// 用一个"统一外壳 + type 字段"的方式来区分消息种类，
-// 而不是每种消息一个独立格式，好处是前端只需要写一处分发逻辑。
 const (
 	// ---- 客户端 -> 服务端 ----
 

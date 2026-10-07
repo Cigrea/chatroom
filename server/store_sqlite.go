@@ -26,9 +26,7 @@ import (
 
 // createTableSQL 是建表语句。
 //
-// CREATE TABLE IF NOT EXISTS 只新建一次表
-// id 自增且为主键
-// 其余都不能为空
+// 只新建一次表，id 自增且为主键，其余列都不能为空
 const createTableSQL = `
 CREATE TABLE IF NOT EXISTS messages (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,9 +40,8 @@ type SQLiteStore struct {
 	db *sql.DB
 }
 
-// NewSQLiteStore 打开（或新建）数据库文件，建好表，返回可用的 Store。
+// NewSQLiteStore 打开或新建数据库文件，建好表，返回 Store。
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
-	// sql.Open 不会真的去连数据库，是懒加载，可能不会报错，错误靠后面的 Ping 才能发现。
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -59,8 +56,7 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	db.SetMaxOpenConns(1)
 
 	// 开启 WAL（Write-Ahead Logging）日志预写。
-	// 好处是写操作不再阻塞读操作，是 SQLite 推荐的日常模式。
-	// 开启失败并不影响功能，可以继续往下。
+	// 让写操作不再阻塞读操作，开启失败并不影响功能，可以继续往下。
 	var journalMode string
 	// 用 QueryRow 可以返回结果再用 Scan 返回错误
 	if err := db.QueryRow("PRAGMA journal_mode = WAL").Scan(&journalMode); err != nil {
@@ -73,13 +69,31 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		return nil, err
 	}
 
-	// Ping 才是真的连一次数据库
+	// 检查是否真的连上了，上面的 sql.Open() 只是懒加载
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, err
 	}
 
 	return &SQLiteStore{db: db}, nil
+}
+
+// maxStoredMessages 是数据库里最多保留多少条消息。
+const maxStoredMessages = 1000
+
+// trimSQL 用来删除超出上限的老消息。
+//
+// 传进来的参数是 maxStoredMessages - 1。
+const trimSQL = `
+DELETE FROM messages WHERE id < (
+    SELECT id FROM messages ORDER BY id DESC LIMIT 1 OFFSET ?
+)`
+
+// Close 实现 Store 接口：关闭数据库连接池。
+//
+// 之前的程序根本没有关闭数据库连接
+func (s *SQLiteStore) Close() error {
+	return s.db.Close()
 }
 
 // Append 实现 Store 接口：往 messages 表插一行。
@@ -95,10 +109,16 @@ func (s *SQLiteStore) Append(sender, content string) (Message, error) {
 		return Message{}, err
 	}
 
-	// 拿数据库分配的自增 ID。
+	// 拿数据库分配的自增 ID
 	id, err := res.LastInsertId()
 	if err != nil {
 		return Message{}, err
+	}
+
+	// 顺便清理超出的老消息
+	// DELETE 是主键索引的，代价小，可以每次写入就清一次。
+	if _, err := s.db.Exec(trimSQL, maxStoredMessages-1); err != nil {
+		log.Println("清理历史消息失败（不影响本次写入）:", err) // 只发日志，不能因为清理失败耽误写入
 	}
 
 	return Message{
@@ -117,9 +137,6 @@ func (s *SQLiteStore) Since(afterID int64, limit int) ([]Message, error) {
 
 	if afterID <= 0 {
 		// ---- 新客户端：要最近的 limit 条。----
-		//
-		// 这里套了一层子查询，因为既要取最新的（倒序），又要按正序返回，
-		// 所以内层按 id 倒序取 limit 条，外层再正序排回来。
 		rows, err := s.db.Query(`
 			SELECT id, sender, content, created_at FROM (
 				SELECT id, sender, content, created_at
@@ -133,8 +150,6 @@ func (s *SQLiteStore) Since(afterID int64, limit int) ([]Message, error) {
 	}
 
 	// ---- 断线重连：只要 ID 大于 afterID 的。----
-	//
-	// id 是主键，天然带索引，所以这个 WHERE 走索引，不会全表扫描。
 	rows, err := s.db.Query(`
 		SELECT id, sender, content, created_at
 		FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?`, afterID, limit)
@@ -147,9 +162,8 @@ func (s *SQLiteStore) Since(afterID int64, limit int) ([]Message, error) {
 
 // scanMessages 把查询结果逐行读成 []Message。
 func scanMessages(rows *sql.Rows) ([]Message, error) {
-	// 用 make(..., 0, 16) 而不是 var out []Message：
-	// 前者返回的是非 nil 的空切片，序列化成 JSON 是 []；
-	// 后者是 nil 切片，会变成 null，前端又得处理一次。
+	// 用 make() 可以返回非 nil 的空切片。
+	// 不然用 []Message 的话返回 nil 切片，序列化会变成 null，前端又要处理一次。
 	out := make([]Message, 0, 16)
 
 	for rows.Next() {
@@ -171,8 +185,7 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		out = append(out, m)
 	}
 
-	// 检查 rows.Err()。
-	//
+	// 检查 rows.Err()
 	// 遍历中途如果出错，rows.Next() 只会返回 false。不检查的话，只会得到一份看起来正常但少了几行的结果。
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -7,8 +7,6 @@ import "time"
 // ============================================================
 
 // historyLimit 是内存里最多保留多少条历史消息。
-//
-// 内存实现不能无限增长，所以超出上限时丢掉最老的。
 const historyLimit = 200
 
 // Store 是消息历史的存储抽象（接口）。
@@ -17,19 +15,19 @@ const historyLimit = 200
 //
 //	MemoryStore  存在内存里（store.go）
 //	SQLiteStore  存在数据库文件里（store_sqlite.go）
-//
-// Store 只会被 Hub 的 Run 那一个 goroutine 调用。
 type Store interface {
-	// Append 追加一条消息，返回带上了服务端 ID 和时间的副本。
-	// ID 和时间都由服务端分配，调用方不需要关心。
-	//
-	// 内存实现里，Append 理应不会失败，但数据库会，所以也要加上 error
+	// Append 追加一条消息，返回有 ID 和时间的副本，ID 和时间都由服务端分配。
 	Append(sender, content string) (Message, error)
 
 	// Since 返回 ID 大于 afterID 的消息，按 ID 升序。
 	//
 	// 用 ID 而不是时间排序是因为时间有可能重复。
 	Since(afterID int64, limit int) ([]Message, error)
+
+	// Close 释放底层资源。
+	//
+	// 内存实现不用关，只会返回 nil，但数据库就必须关：
+	Close() error
 }
 
 // MemoryStore 是基于切片的内存实现。
@@ -46,6 +44,13 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{}
 }
 
+// Close 实现 Store 接口。
+//
+// 内存实现的数据会在程序关闭时释放，所以直接返回 nil。
+func (s *MemoryStore) Close() error {
+	return nil
+}
+
 // Append 实现 Store 接口。
 //
 // 它永远返回 nil 错误，因为没有 error 可供返回。
@@ -60,10 +65,9 @@ func (s *MemoryStore) Append(sender, content string) (Message, error) {
 	}
 	s.messages = append(s.messages, msg)
 
-	// 超过上限就砍掉最老的那些，防止内存无限增长。
-	// 切片截取 s.messages[n:] 只是移动了起点，不会复制底层数组。
-	// 被丢掉的部分会被 GC 清理掉。
+	// 超过上限就删掉最老的消息
 	if len(s.messages) > historyLimit {
+		// 切片截取 s.messages[n:] 只是移动了起点，不会复制底层数组。
 		s.messages = s.messages[len(s.messages)-historyLimit:]
 	}
 
@@ -87,7 +91,7 @@ func (s *MemoryStore) Since(afterID int64, limit int) ([]Message, error) {
 		}
 
 		// 复制一份再返回，而不是直接返回。
-		// 因为切片本质指针，直接返回的话调用方看到的内容会随着后续 Append 变化，那就等于把内部状态泄露出去了。
+		// 因为切片本质指针，直接返回的话调用方看到的内容会随着后续 Append 变化，会泄露内部数据。
 		out := make([]Message, len(s.messages)-start)
 		copy(out, s.messages[start:])
 		return out, nil

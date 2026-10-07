@@ -118,7 +118,7 @@ export function useChat() {
    */
   function appendMessages(incoming: ChatMessage[]): void {
     // 先收集已经存在的 id，避免每次都在整个数组里扫一遍
-    const seen = new Set<number>()
+    const seen = new Set<number>() // Set 让后续索引更快
     for (const item of items.value) {
       if (item.kind === 'chat') seen.add(item.message.id)
     }

@@ -29,9 +29,7 @@ type Hub struct {
 	// store 是消息历史。
 	store Store
 
-	// ---------- 下面四个是外部 goroutine 用来"请求 Run 干活"的通道 ----------
-	// 它们都是无缓冲的：发送方会一直阻塞到 Run 收到为止。
-	// 这是一种天然的背压机制——Run 忙不过来时，外面的请求会自动排队等待。
+	// ---- 外部 goroutine 向 Run 发送请求的通道 ----
 
 	// register 负责新连接建立时请求加入在线列表。
 	register chan *Client
@@ -42,9 +40,9 @@ type Hub struct {
 	// chat 负责处理客户端的消息，存历史并广播出去。
 	chat chan chatRequest
 
-	// HTTP 接口要查历史消息。
-	// 它自带一个 reply 通道，Run 处理完把结果塞回去—，
-	// 这样查询逻辑依然只在 Run 里执行。
+	// historyQuery 负责回应 HTTP 接口的查历史消息请求。
+	//
+	// historyRequest 里有一个 reply 通道，Run 通过它返回结果，这样查询逻辑依然只在 Run 里执行。
 	historyQuery chan historyRequest
 }
 
@@ -67,8 +65,6 @@ type historyRequest struct {
 }
 
 // historyResult 是历史查询的结果。
-//
-// 它把"消息"和"查询错误"一起送回去。
 type historyResult struct {
 	messages []Message
 	err      error
@@ -108,14 +104,12 @@ func (h *Hub) Run() {
 
 		case req := <-h.historyQuery:
 			// 直接查 store 并把结果送回去。
-			// reply 通道有 1 个缓冲，所以这里不会阻塞。
+			// reply 通道有 1 个缓冲，这里不会阻塞。
 			msgs, err := h.store.Since(req.afterID, req.limit)
 			req.reply <- historyResult{messages: msgs, err: err}
 		}
 	}
 }
-
-// 下面这些方法都只被 Run 调用，所以它们可以随意读写 h.clients 和 h.store，不需要任何同步措施。
 
 // addClient 处理新连接。
 func (h *Hub) addClient(c *Client) {
@@ -123,12 +117,11 @@ func (h *Hub) addClient(c *Client) {
 
 	// ---- 推送历史消息 ----
 
-	// 历史是一条消息（里面装一个数组），只占用 send 队列的一个位置。
-	// 在刷新、断线重连的情况下，只推送 since 之后的消息，相当于增量更新。
+	// 在刷新、断线重连的情况下，只推送 since 之后的消息。
 	history, err := h.store.Since(c.since, historyPushLimit)
 	if err != nil {
 		log.Println("读取历史消息失败，本次按空历史处理:", err)
-		history = []Message{} // 用非 nil 空切片，序列化出来是 [] 而不是 null
+		history = []Message{}
 	}
 
 	// 序列化再交给 send。
@@ -138,10 +131,10 @@ func (h *Hub) addClient(c *Client) {
 		h.send(c, payload)
 	}
 
-	// ---- 告诉所有人现在谁在线 ----
+	// 广播在线列表
 	h.broadcast(outbound{Type: TypeMembers, Members: h.nicknames()})
 
-	// ---- 广播上线提示 ----
+	// 广播上线提示
 	h.broadcast(outbound{Type: TypeSystem, Text: c.nickname + " 加入了聊天室"})
 
 	log.Printf("用户 %s 已连接，当前在线 %d 人", c.nickname, len(h.clients))

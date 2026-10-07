@@ -37,6 +37,9 @@ func main() {
 		log.Printf("消息存储: SQLite (文件 %s) ", dbPath)
 	}
 
+	// 进程退出前关闭存储，释放文件占用。内存实现的话什么都不做。
+	defer store.Close()
+
 	// ---- 启动 hub.Run ----
 	hub := NewHub(store)
 	go hub.Run()

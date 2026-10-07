@@ -167,21 +167,95 @@ function onLeave(): void {
 }
 
 /**
- * 自动滚到底部。
+ * 判定"已经滚到底部"的容差（像素）。
  *
- * 监听的是"列表条数"而不是整个数组：整个数组每次变化引用都会变，
+ * 留一点余量而不是要求"完全到底"：用户滚动有惯性，差几个像素就判定成
+ * "离开了底部"的话，正常看消息也会不停弹提示。
+ */
+const NEAR_BOTTOM_PX = 60
+
+/** 用户现在是不是在消息区底部附近 */
+const isNearBottom = ref(true)
+
+/**
+ * 未读消息的起点：它在 items 数组里的下标。
+ *
+ * null 表示"没有未读"。有新消息而用户又不在底部时，把它记成"来新消息之前
+ * 的条数"，也就是第一条新消息的下标。
+ */
+const unreadAnchor = ref<number | null>(null)
+
+/** 未读条数 = 总条数 - 未读起点 */
+const unreadCount = computed(() =>
+  unreadAnchor.value === null ? 0 : Math.max(0, items.value.length - unreadAnchor.value),
+)
+
+/** 滚到底部 */
+function scrollToBottom(smooth = false): void {
+  const el = listEl.value
+  if (!el) return
+  el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
+}
+
+/**
+ * 用户滚动时更新"是否在底部"。
+ *
+ * 如果用户自己滚回底部了，新消息提示就该消失——因为已经看到了。
+ */
+function onMessagesScroll(): void {
+  const el = listEl.value
+  if (!el) return
+
+  // 距离底部还有多少像素
+  const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+  isNearBottom.value = distance <= NEAR_BOTTOM_PX
+
+  if (isNearBottom.value) unreadAnchor.value = null
+}
+
+/** 跳到第一条新消息 */
+function jumpToFirstUnread(): void {
+  if (unreadAnchor.value === null) return
+
+  // 模板上给"第一条未读"那个元素打了 data-unread-anchor 标记，
+  // 所以这里直接按属性找它，不用自己维护一堆元素引用。
+  const target = listEl.value?.querySelector<HTMLElement>('[data-unread-anchor]')
+  target?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+
+  // 立刻清掉提示。滚动结束后 onMessagesScroll 会重新判断位置，
+  // 如果跳过去之后又不在底部了，来新消息会重新记一次起点。
+  unreadAnchor.value = null
+}
+
+/**
+ * 有新消息时的滚动策略。
+ *
+ * ★ 不再"一律滚到底"，而是分两种情况：
+ *
+ *   - 用户本来就在底部 → 照常滚到底（最常见的场景，不用打断）
+ *   - 用户正在往上翻历史 → **不打断他**，只在右下角弹出"N 条新消息"，
+ *     由用户自己决定什么时候跳过去
+ *
+ * 这是聊天软件的通行做法：强行把用户从正在看的地方拽走是很糟糕的体验。
+ *
+ * 监听"列表条数"而不是整个数组，是因为整个数组每次变化引用都会变，
  * 而条数只在真的有新消息时才变，触发更精确。
- *
- * 已知小问题：不管用户是不是正在往上翻历史，都会强制滚到底部。
- * 更好的做法是先判断"用户当前是否在底部附近"再决定要不要滚。
- * 这条写进了 README 的已知问题。
  */
 watch(
   () => items.value.length,
-  async () => {
-    await nextTick() // 等 Vue 把新消息渲染进 DOM，否则滚动用的是旧高度
-    if (listEl.value) {
-      listEl.value.scrollTop = listEl.value.scrollHeight
+  async (newLen, oldLen) => {
+    const before = oldLen ?? 0
+    const added = newLen - before
+    if (added <= 0) return
+
+    await nextTick() // 等 Vue 把新消息渲染进 DOM，否则算出来的高度是旧的
+
+    if (isNearBottom.value) {
+      scrollToBottom()
+      unreadAnchor.value = null
+    } else if (unreadAnchor.value === null) {
+      // 只在第一次离开底部时记录起点，之后来的消息都算同一批未读
+      unreadAnchor.value = before
     }
   },
 )
@@ -266,7 +340,8 @@ watch(
         </div>
       </header>
 
-      <div ref="listEl" class="messages">
+      <!-- @scroll 用来随时判断用户有没有滚到底部 -->
+      <div ref="listEl" class="messages" @scroll.passive="onMessagesScroll">
         <p v-if="items.length === 0" class="muted empty">还没有消息，说点什么吧。</p>
 
         <!--
@@ -274,14 +349,29 @@ watch(
           :key 要保证唯一：聊天消息用服务端 ID，系统提示用自增序号。
         -->
         <template
-          v-for="item in items"
+          v-for="(item, index) in items"
           :key="item.kind === 'chat' ? `m-${item.message.id}` : `s-${item.seq}`"
         >
-          <!-- 系统提示：灰色居中一行 -->
-          <p v-if="item.kind === 'system'" class="system">{{ item.text }}</p>
+          <!--
+            系统提示：灰色居中一行。
+            注意 data-unread-anchor：只有"第一条未读"那个元素会带上这个属性，
+            点"新消息"提示时按它找到目标，滚过去。
+          -->
+          <p
+            v-if="item.kind === 'system'"
+            class="system"
+            :data-unread-anchor="index === unreadAnchor ? '' : undefined"
+          >
+            {{ item.text }}
+          </p>
 
           <!-- 聊天消息：气泡 -->
-          <div v-else class="row" :class="{ mine: isMine(item.message.sender) }">
+          <div
+            v-else
+            class="row"
+            :class="{ mine: isMine(item.message.sender) }"
+            :data-unread-anchor="index === unreadAnchor ? '' : undefined"
+          >
             <div class="bubble">
               <!-- 昵称在最上面一行，按昵称哈希上色，方便区分不同的人 -->
               <div class="sender" :style="{ color: nameColor(item.message.sender) }">
@@ -307,11 +397,33 @@ watch(
 
       <p v-if="errorText" class="error bar">{{ errorText }}</p>
 
-      <form class="composer" @submit.prevent="onSubmit">
-        <input v-model="draft" maxlength="2000" placeholder="说点什么…（回车发送）" />
-        <!-- 没连上服务器或输入为空时禁用发送 -->
-        <button type="submit" :disabled="!draft.trim() || state !== 'open'">发送</button>
-      </form>
+      <!--
+        输入区外面包一层，是为了给"新消息"提示当定位基准。
+        提示用 position:absolute + bottom:100% 贴在输入区正上方，
+        这样不用去硬编码输入框的高度——它变高变矮（比如手机上多了安全区留白），
+        提示都会自己跟着走。
+      -->
+      <div class="composer-area">
+        <!--
+          有新消息、而且用户没在底部时才出现。
+          点一下跳到第一条新消息，而不是直接跳到最后——这样用户能从"开始没看到的地方"接着看。
+        -->
+        <button
+          v-if="unreadCount > 0"
+          class="new-msg-hint"
+          type="button"
+          @click="jumpToFirstUnread"
+        >
+          {{ unreadCount }} 条新消息
+          <span class="arrow">↓</span>
+        </button>
+
+        <form class="composer" @submit.prevent="onSubmit">
+          <input v-model="draft" maxlength="2000" placeholder="说点什么…" />
+          <!-- 没连上服务器或输入为空时禁用发送 -->
+          <button type="submit" :disabled="!draft.trim() || state !== 'open'">发送</button>
+        </form>
+      </div>
     </main>
   </div>
 </template>
@@ -669,6 +781,60 @@ watch(
 }
 
 /* ---- 输入区 ---- */
+
+/*
+ * 输入区外面这层只是用来给"新消息"提示当定位基准。
+ * position:relative 之后，提示就可以用 absolute + bottom:100% 贴在它正上方，
+ * 不用去硬编码输入框的高度。
+ */
+.composer-area {
+  position: relative;
+}
+
+/*
+ * "N 条新消息"提示。
+ *
+ * 定位技巧：bottom:100% 表示"我的底边贴到父元素的上边"，
+ * 于是它永远悬在输入区正上方。再配一个 margin-bottom 留点间距。
+ * 这样输入框因为安全区、字号、换行变高变矮时，提示都会自己跟着走。
+ */
+.new-msg-hint {
+  position: absolute;
+  left: 50%;
+  /* left:50% 把它推到水平中线，再往回挪自身宽度的一半才是真正居中 */
+  transform: translateX(-50%);
+  bottom: 100%;
+  margin-bottom: 10px;
+  z-index: 5;
+
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+
+  font-size: 13px;
+  /* 药丸形：两端是半圆 */
+  border-radius: var(--radius-pill);
+  color: var(--accent-fg);
+  background: var(--accent);
+  /* 悬浮在消息上方，加一层阴影才能和下面的内容分开 */
+  box-shadow: 0 4px 14px rgba(20, 40, 60, 0.25);
+  /* 不让"12 条新消息 ↓"被拆成两行 */
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.new-msg-hint:hover {
+  /* 用 filter 提亮，比再定义一个 hover 色变量省事 */
+  filter: brightness(1.08);
+}
+
+/* 那个向下的小箭头 */
+.new-msg-hint .arrow {
+  font-size: 12px;
+  line-height: 1;
+}
+
 .composer {
   display: flex;
   gap: 10px;

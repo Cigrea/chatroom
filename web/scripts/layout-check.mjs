@@ -1022,6 +1022,179 @@ console.log('=== K. 气泡宽度自适应 + 昵称按规则配色 ===')
   await page.close()
 }
 
+console.log('=== L. 新消息提示（不打断正在翻历史的用户）===')
+{
+  const page = await browser.newPage()
+  await page.setViewport({ width: 1280, height: 800 })
+  await enter(page, '新消息检查')
+
+  const site = await page.evaluate(() => location.origin)
+  const talker = new WebSocket(
+    `${site.replace(/^http/, 'ws')}/ws?nickname=${encodeURIComponent('另一个人')}&since=0`,
+  )
+  await new Promise((res, rej) => {
+    talker.addEventListener('open', res)
+    talker.addEventListener('error', () => rej(new Error('连接失败')))
+    setTimeout(() => rej(new Error('超时')), 6000)
+  })
+
+  // 先灌够消息，让列表能滚动起来
+  for (let i = 1; i <= 30; i++) {
+    talker.send(JSON.stringify({ type: 'chat', content: `铺垫消息 ${i}` }))
+    await sleep(15)
+  }
+  await sleep(900)
+
+  const readState = () =>
+    page.evaluate(() => {
+      const list = document.querySelector('.messages')
+      const hintEl = document.querySelector('.new-msg-hint')
+      return {
+        scrollTop: Math.round(list.scrollTop),
+        scrollHeight: list.scrollHeight,
+        clientHeight: list.clientHeight,
+        hint: hintEl ? hintEl.textContent.replace(/\s+/g, ' ').trim() : null,
+      }
+    })
+
+  const base = await readState()
+  console.log('  铺垫完成:', JSON.stringify(base))
+  check(
+    '列表已经可以滚动（构造出滚动场景）',
+    base.scrollHeight > base.clientHeight + 100,
+    `内容高=${base.scrollHeight} 容器高=${base.clientHeight}`,
+  )
+  check(
+    '刚进聊天室时停在底部',
+    base.scrollTop > base.scrollHeight - base.clientHeight - 80,
+    `scrollTop=${base.scrollTop}`,
+  )
+  check('此时没有新消息提示', base.hint === null, `提示=${base.hint}`)
+
+  // ★ 模拟"用户正在往上翻历史"：滚到最上面
+  await page.evaluate(() => {
+    document.querySelector('.messages').scrollTop = 0
+  })
+  await sleep(300)
+  const scrolledUp = await readState()
+  check('滚到顶部后没有提示', scrolledUp.hint === null, `提示=${scrolledUp.hint}`)
+
+  // 这时候来一条新消息：**不应该**把用户拽到底部
+  // 注意这条和后面那批用**不同的标记**（【首条】/【批N】）。
+  // 上一版两条都叫【新1】，按内容查找时匹配到了错的那条，
+  // 结果断言"跳到了第一条未读"是假通过的——教训：测试里的标记必须唯一。
+  talker.send(JSON.stringify({ type: 'chat', content: '【首条】这是第一条新消息' }))
+  await sleep(700)
+  const afterFirst = await readState()
+  console.log('  第一条新消息后:', JSON.stringify(afterFirst))
+
+  check('★ 出现了新消息提示', afterFirst.hint !== null, `提示=${afterFirst.hint}`)
+  check('★ 提示写的是「1 条新消息」', afterFirst.hint?.includes('1 条新消息') ?? false, `提示=${afterFirst.hint}`)
+  check(
+    '★ 没有把用户拽到底部（滚动位置基本没变）',
+    Math.abs(afterFirst.scrollTop - scrolledUp.scrollTop) < 5,
+    `之前=${scrolledUp.scrollTop} 现在=${afterFirst.scrollTop}`,
+  )
+
+  // ★ 关键：让"第一条未读"下面**有足够多的消息**，否则"跳到第一条"和"跳到底部"
+  //   结果是一样的——浏览器碰到"内容不够滚"时会把滚动位置夹到最大值。
+  const NEW_COUNT = 20
+  for (let i = 1; i <= NEW_COUNT; i++) {
+    talker.send(JSON.stringify({ type: 'chat', content: `【批${i}】第 ${i} 条新消息` }))
+    await sleep(20)
+  }
+  await sleep(1000)
+
+  const afterBatch = await readState()
+  const TOTAL_UNREAD = NEW_COUNT + 1 // 别忘了前面那条【首条】
+  check(
+    `★ 提示累加成「${TOTAL_UNREAD} 条新消息」`,
+    afterBatch.hint?.includes(`${TOTAL_UNREAD} 条新消息`) ?? false,
+    `提示=${afterBatch.hint}`,
+  )
+  check('依然没有拽到底部', Math.abs(afterBatch.scrollTop - scrolledUp.scrollTop) < 5, `scrollTop=${afterBatch.scrollTop}`)
+
+  // 点击前先确认"锚点"到底是哪一条——不然断言可能匹配到别的元素还显示通过
+  const anchorText = await page.evaluate(() => {
+    const el = document.querySelector('[data-unread-anchor]')
+    return el?.querySelector('.text')?.textContent ?? null
+  })
+  check('★ 未读锚点就是第一条新消息（不是后面那批）', anchorText?.includes('【首条】') ?? false, `锚点内容=${anchorText}`)
+
+  // 点提示：应该跳到**第一条**未读，而不是最后一条
+  const hintBox = await page.evaluate(() => {
+    const el = document.querySelector('.new-msg-hint')
+    const r = el.getBoundingClientRect()
+    return { cx: Math.round(r.left + r.width / 2), cy: Math.round(r.top + r.height / 2) }
+  })
+  await page.mouse.click(hintBox.cx, hintBox.cy)
+  await sleep(1600) // 平滑滚动需要一点时间
+
+  const afterJump = await page.evaluate((total) => {
+    const list = document.querySelector('.messages')
+    const listTop = list.getBoundingClientRect().top
+    const listBottom = list.getBoundingClientRect().bottom
+    /** 找含指定文字的那条消息，返回它相对消息区顶部的位置 */
+    const posOf = (needle) => {
+      const bubble = [...document.querySelectorAll('.bubble')].find((b) =>
+        b.querySelector('.text')?.textContent?.includes(needle),
+      )
+      return bubble ? Math.round(bubble.getBoundingClientRect().top - listTop) : null
+    }
+    return {
+      scrollTop: Math.round(list.scrollTop),
+      listHeight: Math.round(listBottom - listTop),
+      firstUnreadPos: posOf('【首条】'),
+      middleUnreadPos: posOf(`【批${Math.floor(total / 2)}】`),
+      lastUnreadPos: posOf(`【批${total}】`),
+      hint: document.querySelector('.new-msg-hint')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+    }
+  }, NEW_COUNT)
+  console.log('  点击提示后:', JSON.stringify(afterJump))
+
+  check(
+    '★ 跳到了第一条未读（它出现在消息区顶部附近）',
+    afterJump.firstUnreadPos !== null && afterJump.firstUnreadPos >= -10 && afterJump.firstUnreadPos < 90,
+    `第一条未读距消息区顶部 ${afterJump.firstUnreadPos}px`,
+  )
+  check(
+    '★ 不是跳到最底部（最后一条新消息还在屏幕外）',
+    afterJump.lastUnreadPos !== null && afterJump.lastUnreadPos > afterJump.listHeight,
+    `最后一条距顶部 ${afterJump.lastUnreadPos}px，消息区高 ${afterJump.listHeight}px`,
+  )
+  check(
+    '中间那些新消息排在第一条后面',
+    afterJump.middleUnreadPos !== null &&
+      afterJump.firstUnreadPos !== null &&
+      afterJump.middleUnreadPos > afterJump.firstUnreadPos,
+    `第一条=${afterJump.firstUnreadPos} 中间那条=${afterJump.middleUnreadPos}`,
+  )
+  check('点完之后提示消失了', afterJump.hint === null, `提示=${afterJump.hint}`)
+
+  // 用户自己滚回底部，提示也应该自动消失
+  await page.evaluate(() => {
+    document.querySelector('.messages').scrollTop = 0
+  })
+  await sleep(300)
+  talker.send(JSON.stringify({ type: 'chat', content: '【新3】第三条' }))
+  await sleep(700)
+  const beforeBack = await readState()
+  check('再次离开底部后提示又出现了', beforeBack.hint !== null, `提示=${beforeBack.hint}`)
+
+  await page.evaluate(() => {
+    const list = document.querySelector('.messages')
+    list.scrollTop = list.scrollHeight
+  })
+  await sleep(500)
+  const afterBack = await readState()
+  check('★ 用户自己滚回底部后，提示自动消失（不用点）', afterBack.hint === null, `提示=${afterBack.hint}`)
+
+  await page.screenshot({ path: `${SHOTS}/desktop-new-message-hint.png` })
+
+  talker.close()
+  await page.close()
+}
+
 await browser.close()
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`)
 console.log(`截图已保存到 ${SHOTS}`)
