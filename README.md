@@ -4,8 +4,9 @@
 
 ## 简介
 - **技术栈：** 前端：Vue 3，后端：Gin，数据库：SQLite
-- **主要参考资料：** 前端：[前端三件套](https://b23.tv/pNRhYM3)、[Vue 3](https://b23.tv/vz6b2ma)，后端：[HTTP后端](https://b23.tv/ezAughK)、[Gin框架](https://b23.tv/M9ifXAX)
+- **主要参考资料：** 前端：[前端三件套](https://b23.tv/pNRhYM3)、[Vue 3](https://b23.tv/pI1WAtR)，后端：[Go 语言](https://b23.tv/fq2ggce)、[HTTP 后端](https://b23.tv/ezAughK)、[Gin 框架](https://b23.tv/M9ifXAX)
 - **开发工具：** VS Code + DeepSeek-V4.1-Flash
+- 仓库地址 https://github.com/Cigrea/chatroom 
 - 项目详细设计说明参见 [设计说明.md](./设计说明.md)
 
 ## 界面预览
@@ -74,3 +75,4 @@ npm run dev
 
 后端的网络接口部分（api.go）大部分由 AI 写成，因为我真的不懂这方面，也实在没时间去了解。
 
+[运行说明.md](./运行说明.md) 也由 AI 写成。
