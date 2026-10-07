@@ -45,21 +45,27 @@ func newRouter(hub *Hub) *gin.Engine {
 
 		// 历史消息查询接口
 		//
-		// 和 WebSocket 连上时推的 history 是同一份数据（底层都调 store.Since），
-		// 区别在这个是前端主动请求、可反复调。
-		//
-		// 这个接口定位是调试用和以后扩展用
+		// 两个方向：
+		//	since=<id>   往后查，返回 ID 大于它的（断线重连补消息）
+		//	before=<id>  往前查，返回 ID 小于它的（用户向上滚翻历史）
+		// 同时传的话以 before 为准。
 		api.GET("/messages", func(c *gin.Context) {
 			afterID, _ := strconv.ParseInt(c.DefaultQuery("since", "0"), 10, 64)
+			beforeID, _ := strconv.ParseInt(c.DefaultQuery("before", "0"), 10, 64)
 
 			limit := 100
 			if v, err := strconv.Atoi(c.DefaultQuery("limit", "100")); err == nil && v > 0 && v <= historyLimit {
 				limit = v
 			}
 
-			// reply 给 1 个缓冲：保证 Run 不会被拖住。
+			// reply 给 1 个缓冲，保证 Run 不会被拖住。
 			reply := make(chan historyResult, 1)
-			hub.historyQuery <- historyRequest{afterID: afterID, limit: limit, reply: reply}
+			hub.historyQuery <- historyRequest{
+				afterID:  afterID,
+				beforeID: beforeID,
+				limit:    limit,
+				reply:    reply,
+			}
 			result := <-reply
 
 			// 查询失败报错

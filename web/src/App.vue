@@ -8,6 +8,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useChat } from './useChat'
 import { useTheme } from './useTheme'
+import type { ChatItem } from './types'
 
 /**
  * 调两个组合式函数，把里面的响应式变量解构出来。
@@ -20,7 +21,20 @@ import { useTheme } from './useTheme'
  * 之所以不用 `const chat = useChat()` 再写 chat.nickname.value，
  * 是因为那样在模板里又长又容易看错，而解构是 Vue 的常见写法。
  */
-const { nickname, joined, items, members, state, errorText, join, leaveChat, send } = useChat()
+const {
+  nickname,
+  joined,
+  items,
+  members,
+  state,
+  errorText,
+  loadingOlder,
+  hasMore,
+  join,
+  leaveChat,
+  send,
+  loadOlder,
+} = useChat()
 
 // 主题（亮色 / 暗色）
 const { theme, toggleTheme } = useTheme()
@@ -174,21 +188,52 @@ function onLeave(): void {
  */
 const NEAR_BOTTOM_PX = 60
 
+/**
+ * 滚到离顶部这么近时，就去加载更早的历史。
+ *
+ * 同样留了余量：等真的滚到 0 才开始请求的话，用户会先看到一段空白再等加载。
+ * 提前一点触发，网络快的话用户根本感觉不到。
+ */
+const LOAD_OLDER_PX = 150
+
 /** 用户现在是不是在消息区底部附近 */
 const isNearBottom = ref(true)
 
 /**
- * 未读消息的起点：它在 items 数组里的下标。
+ * 第一条未读的那一项——存的是**对象引用**，不是下标。
  *
- * null 表示"没有未读"。有新消息而用户又不在底部时，把它记成"来新消息之前
- * 的条数"，也就是第一条新消息的下标。
+ * ★ 为什么不能用下标：
+ *
+ *   往上翻历史会在列表**前面**插入元素，后面每一项的下标都会往后挪。
+ *   如果锚点存的是"第 12 项"，插了 30 条之后它就会指到完全不同的消息上，
+ *   弹出的"N 条新消息"点进去会跳到错的地方。
+ *
+ *   存引用就没这个问题：不管前面插进来多少条，它始终指着那同一条消息。
+ *
+ * null 表示"没有未读"。
  */
-const unreadAnchor = ref<number | null>(null)
+const unreadAnchorItem = ref<ChatItem | null>(null)
 
-/** 未读条数 = 总条数 - 未读起点 */
-const unreadCount = computed(() =>
-  unreadAnchor.value === null ? 0 : Math.max(0, items.value.length - unreadAnchor.value),
-)
+/**
+ * 上一次看到的"最后一项"。
+ *
+ * ★ 这是用来区分**两种会让列表变长的情况**：
+ *
+ *   追加新消息   → 末尾那一项变成了新对象
+ *   往上插旧消息 → 末尾那一项原封不动（引用没变）
+ *
+ *   只有前者才应该弹未读提示。靠这个判断就不需要额外的开关变量，
+ *   也不会因为"标志忘了复位"这类问题出错。
+ */
+let lastSeenLast: ChatItem | null = null
+
+/** 未读条数 = 锚点之后还有多少项 */
+const unreadCount = computed(() => {
+  const anchor = unreadAnchorItem.value
+  if (anchor === null) return 0
+  const idx = items.value.indexOf(anchor)
+  return idx < 0 ? 0 : items.value.length - idx
+})
 
 /** 滚到底部 */
 function scrollToBottom(smooth = false): void {
@@ -198,9 +243,37 @@ function scrollToBottom(smooth = false): void {
 }
 
 /**
- * 用户滚动时更新"是否在底部"。
+ * 往上翻一页历史，并且**保持用户当前看到的位置不动**。
  *
- * 如果用户自己滚回底部了，新消息提示就该消失——因为已经看到了。
+ * ★ 保持位置是这个功能里最关键、也最容易做错的一步。
+ *
+ *   往列表前面插了 N 条之后，这些新内容会把原有内容整体往下推，
+ *   如果什么都不做，用户眼前的画面会"啪"地往下跳一大截——
+ *   明明他只是在看历史，却被弹到了别处。
+ *
+ *   做法很简单：内容长高了多少，就把滚动位置往下推多少。
+ *   两者相抵，用户看到的还是原来那条消息。
+ */
+async function maybeLoadOlder(): Promise<void> {
+  const el = listEl.value
+  if (!el) return
+
+  if (el.scrollTop > LOAD_OLDER_PX) return // 还没滚到顶部附近
+  if (loadingOlder.value || !hasMore.value) return // 正在加载或已经翻到头
+
+  const heightBefore = el.scrollHeight
+  const topBefore = el.scrollTop
+
+  const added = await loadOlder()
+  if (added === 0) return
+
+  await nextTick() // 等新内容渲染进 DOM，否则读到的高度还是旧的
+
+  el.scrollTop = topBefore + (el.scrollHeight - heightBefore)
+}
+
+/**
+ * 用户滚动时更新"是否在底部"，顺便判断要不要加载更早的历史。
  */
 function onMessagesScroll(): void {
   const el = listEl.value
@@ -210,12 +283,18 @@ function onMessagesScroll(): void {
   const distance = el.scrollHeight - el.scrollTop - el.clientHeight
   isNearBottom.value = distance <= NEAR_BOTTOM_PX
 
-  if (isNearBottom.value) unreadAnchor.value = null
+  // 用户自己滚回底部了，新消息提示就该消失——因为已经看到了
+  if (isNearBottom.value) unreadAnchorItem.value = null
+
+  // 滚到顶部附近就继续往前翻。
+  // 这里不 await：滚动事件不该被网络请求卡住，
+  // 而且函数内部自己会靠 loadingOlder 防重入。
+  void maybeLoadOlder()
 }
 
 /** 跳到第一条新消息 */
 function jumpToFirstUnread(): void {
-  if (unreadAnchor.value === null) return
+  if (unreadAnchorItem.value === null) return
 
   // 模板上给"第一条未读"那个元素打了 data-unread-anchor 标记，
   // 所以这里直接按属性找它，不用自己维护一堆元素引用。
@@ -224,13 +303,13 @@ function jumpToFirstUnread(): void {
 
   // 立刻清掉提示。滚动结束后 onMessagesScroll 会重新判断位置，
   // 如果跳过去之后又不在底部了，来新消息会重新记一次起点。
-  unreadAnchor.value = null
+  unreadAnchorItem.value = null
 }
 
 /**
  * 有新消息时的滚动策略。
  *
- * ★ 不再"一律滚到底"，而是分两种情况：
+ * ★ 分两种情况：
  *
  *   - 用户本来就在底部 → 照常滚到底（最常见的场景，不用打断）
  *   - 用户正在往上翻历史 → **不打断他**，只在右下角弹出"N 条新消息"，
@@ -238,24 +317,30 @@ function jumpToFirstUnread(): void {
  *
  * 这是聊天软件的通行做法：强行把用户从正在看的地方拽走是很糟糕的体验。
  *
- * 监听"列表条数"而不是整个数组，是因为整个数组每次变化引用都会变，
- * 而条数只在真的有新消息时才变，触发更精确。
+ * 监听"列表条数"是因为它涵盖所有变化，然后靠"最后一项有没有变"
+ * 把"追加新消息"和"往上插旧消息"区分开（见 lastSeenLast 的说明）。
  */
 watch(
   () => items.value.length,
-  async (newLen, oldLen) => {
-    const before = oldLen ?? 0
-    const added = newLen - before
-    if (added <= 0) return
+  async () => {
+    const lastNow = items.value[items.value.length - 1] ?? null
+
+    // 末尾没变 → 这次是往前插了旧消息，不是来了新消息，什么都不用做
+    if (lastNow === lastSeenLast) return
+
+    // 新出现的那些项从哪开始：上一任"最后一项"的后面一位。
+    // 用 indexOf 算而不是用长度差，是因为这中间可能还发生过往前插入。
+    const firstNewIndex = lastSeenLast === null ? 0 : items.value.indexOf(lastSeenLast) + 1
+    lastSeenLast = lastNow
 
     await nextTick() // 等 Vue 把新消息渲染进 DOM，否则算出来的高度是旧的
 
     if (isNearBottom.value) {
       scrollToBottom()
-      unreadAnchor.value = null
-    } else if (unreadAnchor.value === null) {
-      // 只在第一次离开底部时记录起点，之后来的消息都算同一批未读
-      unreadAnchor.value = before
+      unreadAnchorItem.value = null
+    } else if (unreadAnchorItem.value === null) {
+      // 只在第一次离开底部时记锚点，之后来的消息都算同一批未读
+      unreadAnchorItem.value = items.value[firstNewIndex] ?? null
     }
   },
 )
@@ -340,8 +425,15 @@ watch(
         </div>
       </header>
 
-      <!-- @scroll 用来随时判断用户有没有滚到底部 -->
+      <!-- @scroll 用来判断用户有没有滚到底部、以及有没有滚到顶部附近 -->
       <div ref="listEl" class="messages" @scroll.passive="onMessagesScroll">
+        <!--
+          列表最上面这两行是"往上翻历史"的反馈。
+          它们只是普通元素，会跟着内容一起滚动——所以只有真滚到顶部才看得到。
+        -->
+        <p v-if="loadingOlder" class="load-hint">正在加载更早的消息…</p>
+        <p v-else-if="!hasMore && items.length > 0" class="load-hint">没有更早的消息了</p>
+
         <p v-if="items.length === 0" class="muted empty">还没有消息，说点什么吧。</p>
 
         <!--
@@ -349,18 +441,20 @@ watch(
           :key 要保证唯一：聊天消息用服务端 ID，系统提示用自增序号。
         -->
         <template
-          v-for="(item, index) in items"
+          v-for="item in items"
           :key="item.kind === 'chat' ? `m-${item.message.id}` : `s-${item.seq}`"
         >
           <!--
             系统提示：灰色居中一行。
-            注意 data-unread-anchor：只有"第一条未读"那个元素会带上这个属性，
-            点"新消息"提示时按它找到目标，滚过去。
+            注意 data-unread-anchor：只有"第一条未读"那一项会带上这个属性，
+            点"新消息"提示时按它找到目标滚过去。
+            判断用的是**对象引用相等**而不是下标——因为往上翻会在前面插元素，
+            下标会全部错位（详见 script 里 unreadAnchorItem 的说明）。
           -->
           <p
             v-if="item.kind === 'system'"
             class="system"
-            :data-unread-anchor="index === unreadAnchor ? '' : undefined"
+            :data-unread-anchor="item === unreadAnchorItem ? '' : undefined"
           >
             {{ item.text }}
           </p>
@@ -370,7 +464,7 @@ watch(
             v-else
             class="row"
             :class="{ mine: isMine(item.message.sender) }"
-            :data-unread-anchor="index === unreadAnchor ? '' : undefined"
+            :data-unread-anchor="item === unreadAnchorItem ? '' : undefined"
           >
             <div class="bubble">
               <!-- 昵称在最上面一行，按昵称哈希上色，方便区分不同的人 -->
@@ -917,6 +1011,19 @@ watch(
 .empty {
   text-align: center;
   margin-top: 40px;
+}
+/*
+ * "正在加载更早的消息…" / "没有更早的消息了"。
+ *
+ * 这两行放在消息列表的最上面，是列表里的普通元素，
+ * 所以会跟着内容一起滚动——只有用户真的滚到顶部附近才看得见，
+ * 不会打扰正在看最新消息的人。
+ */
+.load-hint {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+  margin: 0 0 8px;
 }
 .dot {
   width: 7px;

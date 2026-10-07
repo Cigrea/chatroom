@@ -129,7 +129,7 @@ func (s *SQLiteStore) Append(sender, content string) (Message, error) {
 	}, nil
 }
 
-// Since 实现 Store 接口，语义和 MemoryStore 完全一致。
+// Since 实现 Store 接口
 func (s *SQLiteStore) Since(afterID int64, limit int) ([]Message, error) {
 	if limit <= 0 {
 		limit = historyLimit
@@ -153,6 +153,24 @@ func (s *SQLiteStore) Since(afterID int64, limit int) ([]Message, error) {
 	rows, err := s.db.Query(`
 		SELECT id, sender, content, created_at
 		FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?`, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMessages(rows)
+}
+
+// Before 实现 Store 接口
+func (s *SQLiteStore) Before(beforeID int64, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = historyLimit
+	}
+
+	rows, err := s.db.Query(`
+		SELECT id, sender, content, created_at FROM (
+			SELECT id, sender, content, created_at
+			FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?
+		) ORDER BY id ASC`, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}

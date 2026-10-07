@@ -27,6 +27,14 @@ const RECONNECT_BASE_DELAY = 1000
  */
 const RECONNECT_MAX_DELAY = 10000
 
+/**
+ * 每次往上翻历史时拉多少条。
+ *
+ * 30 条大约是一屏到两屏的量：够用户连续滚动着看，又不会一次拉太多
+ * 让界面卡住。太小会频繁请求，太大一次插入太多元素、滚动位置也容易跳。
+ */
+const OLDER_PAGE_SIZE = 30
+
 export function useChat() {
   // ============================================================
   // 响应式状态：这些一变，界面就会自动重绘
@@ -51,6 +59,17 @@ export function useChat() {
 
   /** 消息列表（聊天消息 + 系统提示，按到达顺序混排） */
   const items = ref<ChatItem[]>([])
+
+  /** 正在往上加载更早的消息（用来显示"正在加载…"） */
+  const loadingOlder = ref(false)
+
+  /**
+   * 还有没有更早的消息。
+   *
+   * 初始给 true——服务端在连接时只推最近 100 条，我们并不知道库里还有没有更早的。
+   * 等第一次往上翻、发现服务端给不满一页，就把它设成 false。
+   */
+  const hasMore = ref(true)
 
   /** 在线成员昵称列表 */
   const members = ref<string[]>([])
@@ -105,6 +124,19 @@ export function useChat() {
     return max
   }
 
+  /**
+   * 列表里**最老**的那条聊天消息 ID，往上翻历史时当游标用。
+   *
+   * 和 currentLastId 是一对：一个取最大值（往后补新消息），一个取最小值（往前翻旧消息）。
+   * 一旦加载失败或已经翻到头，返回 0，调用方据此停止继续请求。
+   */
+  function oldestId(): number {
+    for (const item of items.value) {
+      if (item.kind === 'chat') return item.message.id
+    }
+    return 0
+  }
+
   // ============================================================
   // 消息处理
   // ============================================================
@@ -130,12 +162,36 @@ export function useChat() {
     }
   }
 
+  /**
+   * 把一批**更老**的消息插到列表最前面，按 id 去重。
+   *
+   * 和 appendMessages 是一对：那个管新消息（push 到尾部），这个管翻到的旧消息
+   * （unshift 到头部）。
+   *
+   * 返回真正插入了多少条，调用方要用它来调整未读锚点的下标——
+   * 因为往前插一条，后面所有元素的下标都会往后移一位。
+   */
+  function prependMessages(incoming: ChatMessage[]): number {
+    const seen = new Set<number>()
+    for (const item of items.value) {
+      if (item.kind === 'chat') seen.add(item.message.id)
+    }
+
+    // 先滤掉已经有的，再按 id 升序排好。
+    // 排序是必须的：服务端返回时已经排过，但去重之后顺序不保证，
+    // 而且前端本来就依赖"列表按 id 递增"这个前提。
+    const fresh = incoming.filter((m) => !seen.has(m.id)).sort((a, b) => a.id - b.id)
+    if (fresh.length === 0) return 0
+
+    items.value.unshift(...fresh.map((message) => ({ kind: 'chat' as const, message })))
+    return fresh.length
+  }
+
   /** 追加一条系统提示 */
   function appendSystem(text: string): void {
     systemSeq += 1
     items.value.push({ kind: 'system', seq: systemSeq, text })
   }
-
   /**
    * 处理服务端推来的一条消息。
    *
@@ -332,6 +388,57 @@ export function useChat() {
     return true
   }
 
+  /**
+   * 往上翻一页更早的消息，返回这次真正插进去了几条。
+   *
+   * ★ 这里走的是 HTTP 而不是 WebSocket。
+   *   因为"翻历史"本来就是一次一问一答的请求，用普通接口更直接；
+   *   而 WebSocket 那条通道留给"服务端主动推过来的"消息。
+   *
+   * ★ 用 before=<最老那条的 ID> 当游标，服务端返回比它更老的一批。
+   *   于是这个功能天然和已有的历史接得上，不需要页码、分页器之类的东西——
+   *   前端只是"把更老的消息 unshift 到列表前面"，看起来就是一条连续的聊天记录。
+   */
+  async function loadOlder(): Promise<number> {
+    // 正在加载、或者已经翻到头了，就不要重复请求
+    if (loadingOlder.value || !hasMore.value) return 0
+
+    const before = oldestId()
+    if (before <= 0) {
+      // 列表里一条聊天消息都没有，没什么可翻的
+      hasMore.value = false
+      return 0
+    }
+
+    loadingOlder.value = true
+    try {
+      const res = await fetch(`/api/messages?before=${before}&limit=${OLDER_PAGE_SIZE}`)
+      if (!res.ok) throw new Error(`加载历史消息失败（HTTP ${res.status}）`)
+
+      const data = (await res.json()) as { messages?: ChatMessage[] | null }
+      const older = data.messages ?? []
+
+      // 拿回来的不足一整页，说明后面没有了。
+      // 这是个"探测到头"的常用手法：服务端不用额外返回总数，
+      // 客户端靠"这次给满没给满"就能判断。
+      if (older.length < OLDER_PAGE_SIZE) hasMore.value = false
+
+      const added = prependMessages(older)
+
+      // 注意：这里**不**去动未读提示的锚点。
+      // 锚点由 App.vue 持有（它管滚动），而且它存的是"那一项对象的引用"，
+      // 往前插入元素不会让它指错——所以也不需要任何补偿。
+
+      errorText.value = ''
+      return added
+    } catch (e) {
+      errorText.value = e instanceof Error ? e.message : '加载历史消息失败'
+      return 0
+    } finally {
+      loadingOlder.value = false
+    }
+  }
+
   // ============================================================
   // 生命周期
   // ============================================================
@@ -358,10 +465,13 @@ export function useChat() {
     members,
     state,
     errorText,
+    loadingOlder,
+    hasMore,
     // 方法
     join,
     leaveChat,
     send,
+    loadOlder,
     disconnect,
   }
 }

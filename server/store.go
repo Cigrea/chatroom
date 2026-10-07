@@ -19,10 +19,11 @@ type Store interface {
 	// Append 追加一条消息，返回有 ID 和时间的副本，ID 和时间都由服务端分配。
 	Append(sender, content string) (Message, error)
 
-	// Since 返回 ID 大于 afterID 的消息，按 ID 升序。
-	//
-	// 用 ID 而不是时间排序是因为时间有可能重复。
+	// Since 返回 ID 大于 afterID 的消息，按 ID 升序，最多 limit 条。
 	Since(afterID int64, limit int) ([]Message, error)
+
+	// Before 返回 ID 小于 beforeID 的消息，按 ID 升序，最多 limit 条。
+	Before(beforeID int64, limit int) ([]Message, error)
 
 	// Close 释放底层资源。
 	//
@@ -107,5 +108,29 @@ func (s *MemoryStore) Since(afterID int64, limit int) ([]Message, error) {
 			}
 		}
 	}
+	return out, nil
+}
+
+// Before 实现 Store 接口。
+//
+// 同样永远返回 nil 错误。
+func (s *MemoryStore) Before(beforeID int64, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = historyLimit
+	}
+
+	// 提取在 beforeID 前的消息。
+	out := make([]Message, 0, limit)
+	for _, m := range s.messages {
+		if m.ID < beforeID {
+			out = append(out, m)
+		}
+	}
+
+	// 只留最后 limit 条。
+	if len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+
 	return out, nil
 }

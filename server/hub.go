@@ -54,8 +54,13 @@ type chatRequest struct {
 
 // historyRequest 查询历史消息并返回
 type historyRequest struct {
-	// 只要 ID 大于它的
+	// 往后查：只要 ID 大于它的（断线重连补消息用）
 	afterID int64
+
+	// 往前查：只要 ID 小于它的（用户向上翻历史用）
+	//
+	// beforeID > 0 时优先往前查。
+	beforeID int64
 
 	// 最多几条
 	limit int
@@ -105,7 +110,15 @@ func (h *Hub) Run() {
 		case req := <-h.historyQuery:
 			// 直接查 store 并把结果送回去。
 			// reply 通道有 1 个缓冲，这里不会阻塞。
-			msgs, err := h.store.Since(req.afterID, req.limit)
+			var (
+				msgs []Message
+				err  error
+			)
+			if req.beforeID > 0 {
+				msgs, err = h.store.Before(req.beforeID, req.limit)
+			} else {
+				msgs, err = h.store.Since(req.afterID, req.limit)
+			}
 			req.reply <- historyResult{messages: msgs, err: err}
 		}
 	}

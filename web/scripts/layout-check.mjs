@@ -1195,6 +1195,151 @@ console.log('=== L. 新消息提示（不打断正在翻历史的用户）===')
   await page.close()
 }
 
+console.log('=== M. 向上滚动加载更多历史（接在已有消息前面，位置不跳）===')
+{
+  const page = await browser.newPage()
+  await page.setViewport({ width: 1280, height: 900 })
+  await enter(page, '翻历史检查')
+
+  const site = await page.evaluate(() => location.origin)
+  const seeder = new WebSocket(
+    `${site.replace(/^http/, 'ws')}/ws?nickname=${encodeURIComponent('铺垫器')}&since=0`,
+  )
+  await new Promise((res, rej) => {
+    seeder.addEventListener('open', res)
+    seeder.addEventListener('error', () => rej(new Error('连接失败')))
+    setTimeout(() => rej(new Error('超时')), 6000)
+  })
+
+  // 先灌够消息：连接时只推最近 100 条，库里得明显多于 100 才有的可翻
+  const SEED = 220
+  for (let i = 1; i <= SEED; i++) {
+    seeder.send(JSON.stringify({ type: 'chat', content: `历史消息 ${i}` }))
+    await sleep(8)
+  }
+  await sleep(1500)
+
+  const countBubbles = () => page.evaluate(() => document.querySelectorAll('.bubble').length)
+
+  // 重新连一次页面，让它只拿到最近 100 条，这样上面还有得翻
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('.app', { timeout: 8000 })
+  await sleep(1200)
+
+  const initial = await countBubbles()
+  console.log(`  初始加载了 ${initial} 条消息`)
+  check('初始只加载了最近 100 条左右（上面还有可翻的）', initial <= 110, `实际 ${initial} 条`)
+
+  // ★ 触发加载、并在**同一次 evaluate 里**立刻测量参照点。
+  //
+  //   为什么必须在同一次调用里：onMessagesScroll 是同步触发的，它会去 fetch，
+  //   而 fetch 是异步的——所以设置 scrollTop = 0 之后马上测量，
+  //   DOM 还没有被插入新内容，量到的是"加载前"的真实状态。
+  //
+  //   上一版先在 scrollTop=400 时测量、再把滚动设成 0，
+  //   结果参照消息当然会往下移 400px，测出来的是"我自己的滚动"而不是"插入导致的跳动"。
+  const before = await page.evaluate(() => {
+    const list = document.querySelector('.messages')
+    list.scrollTop = 0 // 这一步会同步触发 onMessagesScroll → 开始加载
+
+    const listTop = list.getBoundingClientRect().top
+    const visibles = [...document.querySelectorAll('.bubble')].filter(
+      (b) => b.getBoundingClientRect().bottom > listTop + 1,
+    )
+    const first = visibles[0]
+    return {
+      text: first?.querySelector('.text')?.textContent ?? '',
+      offset: first ? Math.round(first.getBoundingClientRect().top - listTop) : null,
+      scrollTop: Math.round(list.scrollTop),
+      bubbleCount: document.querySelectorAll('.bubble').length,
+      scrollHeight: list.scrollHeight,
+    }
+  })
+  console.log('  触发的瞬间:', JSON.stringify(before))
+  check('找到了一条参照消息', before.text.length > 0, JSON.stringify(before))
+
+  await sleep(2500) // 等请求 + 插入 + 位置补偿都完成
+
+  const afterLoad = await page.evaluate((needle) => {
+    const list = document.querySelector('.messages')
+    const listTop = list.getBoundingClientRect().top
+    const el = [...document.querySelectorAll('.bubble')].find((b) =>
+      b.querySelector('.text')?.textContent?.includes(needle),
+    )
+    return {
+      bubbleCount: document.querySelectorAll('.bubble').length,
+      anchorOffset: el ? Math.round(el.getBoundingClientRect().top - listTop) : null,
+      scrollTop: Math.round(list.scrollTop),
+      scrollHeight: list.scrollHeight,
+      loadHintText: document.querySelector('.load-hint')?.textContent?.trim() ?? null,
+    }
+  }, before.text)
+  console.log('  加载后:', JSON.stringify(afterLoad))
+
+  check('★ 真的加载到了更早的消息（气泡变多了）', afterLoad.bubbleCount > before.bubbleCount, `${before.bubbleCount} -> ${afterLoad.bubbleCount}`)
+  check('★ 加载后滚动位置被补偿了（没有停在 0）', afterLoad.scrollTop > 0, `scrollTop=${afterLoad.scrollTop}`)
+  check(
+    '★ 补偿量正好等于内容变高的量',
+    Math.abs(afterLoad.scrollTop - (afterLoad.scrollHeight - before.scrollHeight)) < 5,
+    `scrollTop=${afterLoad.scrollTop}，内容增高=${afterLoad.scrollHeight - before.scrollHeight}`,
+  )
+  check(
+    '★ 视野里那条参照消息基本没动（没有"跳一下"）',
+    afterLoad.anchorOffset !== null && Math.abs(afterLoad.anchorOffset - (before.offset ?? 0)) < 40,
+    `加载前 ${before.offset}px，加载后 ${afterLoad.anchorOffset}px`,
+  )
+
+  // 一直往上翻，直到翻到头。
+  //
+  // ★ 这里用 waitForFunction 等条件，而不是 sleep 一个固定时间：
+  //   数据库里有多少条取决于前面所有用例灌了多少，是未知的；
+  //   等固定时间的写法要么太慢，要么不够。等"这一轮确实加载完了"最稳。
+  //   （加载完成的标志：滚动位置被补偿回 > 0，或者已经提示翻到头了。）
+  let rounds = 0
+  let reachedEnd = false
+  while (rounds < 80) {
+    rounds++
+    await page.evaluate(() => {
+      document.querySelector('.messages').scrollTop = 0
+    })
+
+    try {
+      await page.waitForFunction(
+        () => {
+          const list = document.querySelector('.messages')
+          const hint = document.querySelector('.load-hint')
+          return list.scrollTop > 0 || (hint?.textContent?.includes('没有更早') ?? false)
+        },
+        { timeout: 5000 },
+      )
+    } catch {
+      console.log(`    第 ${rounds} 轮等待超时，停止`)
+      break
+    }
+
+    const st = await page.evaluate(() => ({
+      hint: document.querySelector('.load-hint')?.textContent?.trim() ?? null,
+      count: document.querySelectorAll('.bubble').length,
+    }))
+    if (rounds % 5 === 0 || st.hint?.includes('没有更早')) {
+      console.log(`    第 ${rounds} 轮: 共 ${st.count} 条, 提示=${st.hint ?? '无'}`)
+    }
+    if (st.hint?.includes('没有更早')) {
+      reachedEnd = true
+      break
+    }
+  }
+  check('★ 一直往上翻能翻到头并提示"没有更早的消息了"', reachedEnd, `翻了 ${rounds} 轮还没到头`)
+
+  const finalCount = await countBubbles()
+  check('翻到底后总数接近灌进去的数量', finalCount >= SEED, `共 ${finalCount} 条，灌了 ${SEED} 条`)
+
+  await page.screenshot({ path: `${SHOTS}/desktop-load-older.png` })
+
+  seeder.close()
+  await page.close()
+}
+
 await browser.close()
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`)
 console.log(`截图已保存到 ${SHOTS}`)
