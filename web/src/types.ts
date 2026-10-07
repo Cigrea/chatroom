@@ -27,7 +27,7 @@ export interface ChatMessage {
 }
 
 /** 服务端可能推来的消息类型 */
-export type ServerEventType = 'history' | 'message' | 'members' | 'system' | 'error'
+export type ServerEventType = 'history' | 'message' | 'members' | 'system' | 'welcome' | 'error'
 
 /**
  * 服务端推来的一条消息。
@@ -46,6 +46,13 @@ export interface ServerEvent {
   messages?: ChatMessage[] | null
   /** type === 'members' 时有值 */
   members?: string[] | null
+  /**
+   * type === 'welcome' 时有值。
+   *
+   * 这是服务端最终分配给我的昵称。如果我要的名字已经被别人用了，
+   * 服务端会加序号，所以这里的值可能和我在输入框里填的不一样（例如"小明(2)"）。
+   */
+  nickname?: string | null
   /** type === 'system' / 'error' 时有值 */
   text?: string | null
 }

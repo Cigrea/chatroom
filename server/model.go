@@ -39,6 +39,9 @@ const (
 	// TypeMembers：在线成员列表发生了变化。
 	TypeMembers = "members"
 
+	// TypeWelcome：服务端向客户端推送独特的昵称。
+	TypeWelcome = "welcome"
+
 	// TypeSystem：系统提示。
 	TypeSystem = "system"
 
@@ -75,6 +78,9 @@ type outbound struct {
 
 	// 在线昵称列表，TypeMembers 使用
 	Members []string `json:"members,omitempty"`
+
+	// 服务端最终分配给这个客户端的昵称，TypeWelcome 使用。
+	Nickname string `json:"nickname,omitempty"`
 
 	// 一句提示，TypeSystem/TypeError 使用
 	Text string `json:"text,omitempty"`

@@ -546,16 +546,19 @@ watch(
    */
   grid-template-rows: minmax(0, 1fr);
   /*
-   * 高度用 dvh 而不是 vh。
+   * 高度：优先用 JS 量出来的 --app-height，拿不到才退回 dvh。
    *
    * vh 在手机浏览器里等于"地址栏收起时"的高度，比实际可见区域高，
    * 结果页面底部的输入框会被顶到屏幕外——这正是指南里说的"输入框被挤没"。
-   * dvh（dynamic viewport height）会跟着地址栏的显示/隐藏变化，是移动端的正解。
+   * dvh（dynamic viewport height）会跟着地址栏的显示/隐藏变化，比 vh 好。
    *
-   * 先写一行 vh 是给不认 dvh 的老浏览器兜底，认得的浏览器会用后一行覆盖它。
+   * 但 dvh 不跟**软键盘**联动（微信内置浏览器里尤其明显：键盘弹了 dvh 不动），
+   * 所以真正的准数是 window.visualViewport.height，由 src/main.ts 写进 --app-height。
+   * 三级兜底：老浏览器 → vh；认 dvh 的 → dvh；我们的 JS 跑起来了 → --app-height。
    */
   height: 100vh;
   height: 100dvh;
+  height: var(--app-height, 100dvh);
 }
 
 /* ---- 左侧成员栏 ---- */
@@ -965,6 +968,7 @@ watch(
   place-items: center;
   height: 100vh;
   height: 100dvh; /* 同上：躲开手机地址栏，否则卡片会被顶偏 */
+  height: var(--app-height, 100dvh); /* 键盘弹出时也要跟着缩，不然输入框会被盖住 */
   padding: 20px; /* 窄屏时让卡片离屏幕边缘有点距离 */
 }
 .gate-card {

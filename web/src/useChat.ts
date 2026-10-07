@@ -220,6 +220,41 @@ export function useChat() {
         if (event.text) appendSystem(event.text)
         break
 
+      case 'welcome': {
+        /*
+         * 服务端告诉我"你最终的昵称是什么"。
+         *
+         * 重名时它会在后面加序号（见后端 hub.go 的 uniqueNickname），
+         * 所以这个值可能和我填的不一样。必须用它覆盖本地的 nickname：
+         * 消息里的发送者、成员列表里"哪个是我"、以及"这条是不是我发的"，
+         * 全都拿 nickname 去比对。
+         *
+         * 加 {} 是因为 case 里要声明变量，不加的话所有 case 共用一个作用域，
+         * 会和别的 case 里的同名变量撞车。
+         */
+        const assigned = event.nickname
+        if (!assigned) break
+
+        // 覆盖之前先把"我原本想要的名字"记下来，用来拼提示语
+        const requested = nickname.value
+        nickname.value = assigned
+
+        /*
+         * 只在名字真的被改了的时候提示一次。
+         *
+         * 为什么不会重复提示：下次重连时 connect() 用的就是改过的名字，
+         * 服务端会原样返回，requested 和 assigned 相等，不会再进这个分支。
+         *
+         * ★ 这里**不写 localStorage**：下次进来还是用我自己填的那个名字，
+         *   会不会被加序号取决于当时有没有人跟我重名。
+         *   如果把它存下来，下次就变成"小明(2)"再撞一次，号会越滚越长。
+         */
+        if (assigned !== requested) {
+          appendSystem(`昵称「${requested}」已经有人在用了，你现在的昵称是「${assigned}」`)
+        }
+        break
+      }
+
       case 'error':
         errorText.value = event.text ?? '服务端返回了一个错误'
         break

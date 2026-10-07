@@ -3,7 +3,17 @@
   <head>
     <meta charset="UTF-8">
     <link rel="icon" href="/favicon.ico">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <!--
+      viewport-fit=cover：允许内容铺到刘海屏/圆角区域，配合 CSS 里的 env(safe-area-inset-*) 用。
+
+      interactive-widget=resizes-content：告诉浏览器"软键盘弹出时请把布局区域也缩小"。
+      默认行为（resizes-visual）只缩视觉视口，布局高度不变，于是底部输入框会被键盘盖住。
+      不认这个参数的浏览器会直接忽略它，没有副作用。
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    >
     <meta name="theme-color" content="#ffffff">
     <title>轻量聊天室</title>
     <script>

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"sort"
 )
@@ -126,6 +127,9 @@ func (h *Hub) Run() {
 
 // addClient 处理新连接。
 func (h *Hub) addClient(c *Client) {
+	// 给昵称加序号防重名
+	c.nickname = h.uniqueNickname(c.nickname)
+
 	h.clients[c] = true
 
 	// ---- 推送历史消息 ----
@@ -140,6 +144,13 @@ func (h *Hub) addClient(c *Client) {
 	// 序列化再交给 send。
 	if payload, err := json.Marshal(outbound{Type: TypeHistory, Messages: history}); err != nil {
 		log.Println("序列化历史消息失败:", err)
+	} else {
+		h.send(c, payload)
+	}
+
+	// 推送欢迎消息，带上最终敲定的昵称。
+	if payload, err := json.Marshal(outbound{Type: TypeWelcome, Nickname: c.nickname}); err != nil {
+		log.Println("序列化昵称失败:", err)
 	} else {
 		h.send(c, payload)
 	}
@@ -219,7 +230,35 @@ func (h *Hub) send(c *Client, payload []byte) {
 	}
 }
 
+// nicknameTaken 检查昵称是不是已经被在线的某个人占用了。
+func (h *Hub) nicknameTaken(name string) bool {
+	for c := range h.clients {
+		if c.nickname == name {
+			return true
+		}
+	}
+	return false
+}
+
+// uniqueNickname 给重名的昵称加一个序号后缀，保证在线昵称互不相同。
+func (h *Hub) uniqueNickname(name string) string {
+	if !h.nicknameTaken(name) {
+		return name
+	}
+
+	// 从 1 往上找第一个没被占用的序号。
+	// 中间有人退出时会留下空位，下一个重名的人会自动补进去。
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s(%d)", name, i)
+		if !h.nicknameTaken(candidate) {
+			return candidate
+		}
+	}
+}
+
 // nicknames 返回当前在线的昵称列表。
+//
+// 经过 uniqueNickname 之后在线昵称一定是唯一的，这里的去重其实是双保险。
 func (h *Hub) nicknames() []string {
 	// 用 seen 去重：多人用同一个昵称时成员列表里只显示一个。
 	seen := make(map[string]bool, len(h.clients))

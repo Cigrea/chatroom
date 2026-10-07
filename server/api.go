@@ -231,15 +231,13 @@ func serveWS(hub *Hub, c *gin.Context) {
 		since:    since,
 	}
 
-	// 先启动writePump，才能成功读到注册后推送的消息。
-	go client.writePump()
-
-	// 把"我要加入"交给 Hub。这里会阻塞到 Hub 收到为止，
-	// 之后 Hub 就会推送历史消息、更新成员列表、广播上线提示。
+	// writePump 必须等注册完再启动。
+	//
+	// writePump 里会读 c.nickname，注册时改昵称可能竞态。
 	hub.register <- client
 
-	// readPump 放在注册之后启动：这样它一旦退出，
-	// 发出去的 unregister 一定能对应上一个已经注册过的 client。
+	go client.writePump()
+	// readPump 也放在注册之后启动，这样它一旦退出，发出去的 unregister 一定能对应上一个已经注册过的 client。
 	go client.readPump()
 }
 
