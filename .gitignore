@@ -8,3 +8,14 @@ dist/
 *.db-wal
 *.db-shm
 *.db-journal
+
+# 开发期用的自检脚本和单元测试。
+#
+# 不提交它们，是因为它们不属于这个作品本身要交付的内容。
+# 但也没有删掉——本地还要靠它们验证"改完之后有没有把别的地方弄坏"。
+#
+# scripts/ 这一条匹配任意层级的 scripts 目录，所以 scripts/ws-check.mjs
+# 和 web/scripts/layout-check.mjs 都被覆盖了。
+scripts/
+server/*_test.go
+

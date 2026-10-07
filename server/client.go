@@ -37,6 +37,14 @@ const (
 	// maxMessageSize 是单条消息的最大字节数。
 	// 防止有人塞一个超大报文把服务打爆。超长时 ReadMessage 会直接报错。
 	maxMessageSize = 4096
+
+	// ---- 频率限制 ----
+
+	// rateWindow 是限流的时间窗口。
+	rateWindow = time.Second
+
+	// rateLimit 是一个窗口内每秒最多允许多少条消息，防刷屏。
+	rateLimit = 5
 )
 
 // Client 代表一条 WebSocket 连接。
@@ -57,6 +65,14 @@ type Client struct {
 	// 断线重连时前端把它带上来，服务端就只补新的，
 	// 不用把整个历史重传一遍。首次连接传 0。
 	since int64
+
+	// ---- 限流用的两个字段 ----
+
+	// rateWindowStart 是当前限流窗口的起点
+	rateWindowStart time.Time
+
+	// rateCount 是当前窗口里已经收了多少条
+	rateCount int
 }
 
 // readPump 阻塞在 ReadMessage 上，把客户端发来的数据解析后交给 Hub。
@@ -124,9 +140,29 @@ func (c *Client) readPump() {
 			continue // 空消息直接丢弃，不入库也不广播
 		}
 
+		// 频率限制。超了就丢掉这条，不入库也不广播。
+		if !c.allowMessage() {
+			// 只在每个窗口被限流的第一条打日志，免得刷屏把日志冲爆
+			if c.rateCount == rateLimit+1 {
+				log.Printf("用户 %s 发送过快，本窗口内超出的消息已丢弃", c.nickname)
+			}
+			continue
+		}
+
 		// 交给 Hub 处理：存历史 + 广播
 		c.hub.chat <- chatRequest{client: c, content: content}
 	}
+}
+
+// allowMessage 判断这条消息是否超出了频率限制。
+func (c *Client) allowMessage() bool {
+	now := time.Now()
+	if now.Sub(c.rateWindowStart) >= rateWindow {
+		c.rateWindowStart = now
+		c.rateCount = 0
+	}
+	c.rateCount++
+	return c.rateCount <= rateLimit
 }
 
 // writePump 从 send 队列里取消息写进连接，另外定期发 ping 探测对方是否还活着。

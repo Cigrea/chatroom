@@ -3,6 +3,9 @@ package main
 import (
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -14,18 +17,65 @@ import (
 // HTTP 层：路由、CORS、WebSocket 升级
 // ============================================================
 
-// upgrader 负责把一条 HTTP 连接"升级"成 WebSocket 连接。
+// extraAllowedOrigins 是"除了同源之外还额外允许"的来源清单，
+// 从环境变量 CHATROOM_ALLOWED_ORIGINS 读，逗号分隔。
 //
-// gorilla 的默认实现会检查请求里的 Origin 头，一旦发现来源和 Host 不一致
-// 就直接拒绝升级。开发时前端在 5173、后端在 8080，属于跨域，所以要放开。
+// 留空表示**只允许同源**——这是部署时的默认行为，也是最安全的。
+var extraAllowedOrigins = parseOriginList(os.Getenv("CHATROOM_ALLOWED_ORIGINS"))
+
+// parseOriginList 把 "a,b,c" 解析成一个集合，顺便丢掉空白项。
+func parseOriginList(raw string) map[string]bool {
+	out := make(map[string]bool)
+	for _, item := range strings.Split(raw, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out[item] = true
+		}
+	}
+	return out
+}
+
+// upgrader 负责把一条 HTTP 连接"升级"成 WebSocket 连接。
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
+	CheckOrigin:     checkOrigin,
+}
 
-	CheckOrigin: func(r *http.Request) bool {
-		// 放开所有来源，方便前后端分离开发。
-		return true
-	},
+// checkOrigin 决定要不要接受这次 WebSocket 握手。
+//
+// ★ 为什么必须认真查：浏览器的同源策略对 WebSocket 的保护**比普通请求弱得多**——
+// 任何网页都能发起一个到任意地址的 WebSocket 连接，请求照样发出去，
+// 服务端不主动拒绝的话握手就成功了。
+// 所以别人写一个页面，就能让你的用户连到你的聊天室上来。
+// CORS 拦不住它，那是给普通 HTTP 请求用的另一套机制。
+//
+// 三条规则：
+//
+//  1. **没有 Origin 头 → 放行。** 那不是浏览器发起的（curl、我们的自检脚本）。
+//     而且这类客户端本来就能随便伪造 Origin，拦它没有意义。
+//
+//  2. **Origin 和请求的 Host 一致 → 放行。** 这正是部署时的形态：
+//     前端打包后由同一个 Go 进程伺服，两个地址完全一样。
+//
+//  3. **其余看额外白名单。** 开发时前端在 5173、后端在 8080，
+//     Host 对不上，所以需要把前端地址加进去：
+//
+//     $env:CHATROOM_ALLOWED_ORIGINS="http://localhost:5173"
+func checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // 规则 1
+	}
+
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(u.Host, r.Host) {
+		return true // 规则 2：同源
+	}
+
+	return extraAllowedOrigins[origin] || extraAllowedOrigins[u.Host] // 规则 3
 }
 
 // newRouter 组装所有路由，返回配置好的 gin 引擎。
@@ -85,7 +135,69 @@ func newRouter(hub *Hub) *gin.Engine {
 		serveWS(hub, c)
 	})
 
+	// 前端静态文件（可选，见函数说明）。
+	mountFrontend(r)
+
 	return r
+}
+
+// mountFrontend 把打包好的前端挂在根路径下，让前后端跑在**同一个端口**上。
+//
+// 为什么部署时一定要这么做：
+//
+//	开发阶段前端跑在 vite dev server(5173)、后端在 8080，
+//	靠 vite 的代理把请求转过去，浏览器眼里是同源的。
+//	但部署到服务器上时，如果再起一个静态文件服务，就变成两个端口两个源，
+//	又得回头去处理跨域；而且 WebSocket 的握手还要单独配 CheckOrigin。
+//
+//	把它挂到同一个 Go 进程上之后：一个端口、一个源，
+//	CORS 和 CheckOrigin 全都自动成立，跟开发时靠代理达到的效果一样。
+//
+// ★ 这里用 NoRoute 而不是 r.Static("/", dir)，是因为后者会注册成
+//
+//	  `/*filepath` 通配路由，而 gin **不允许**它和已有的 `/api` 顶层路由共存，
+//	  启动时直接 panic：
+//
+//		catch-all wildcard '*filepath' conflicts with existing path segment 'api'
+//
+//	  NoRoute 是"所有路由都没匹配上时的兜底处理函数"，不在路由树里，
+//	  所以不会有冲突。
+//
+// 目录里没有 index.html 时只是打条日志跳过，不报错——
+// 因为开发时根本不打包，这个目录本来就不存在。
+func mountFrontend(r *gin.Engine) {
+	dir := os.Getenv("CHATROOM_WEB_DIR")
+	if dir == "" {
+		// 默认值相对于**启动目录**：在 server/ 下执行 go run . 时正好指向打包产物
+		dir = "../web/dist"
+	}
+
+	indexPath := filepath.Join(dir, "index.html")
+	if _, err := os.Stat(indexPath); err != nil {
+		log.Printf("没找到前端打包产物（%s），本次只提供 API 和 WebSocket", indexPath)
+		log.Printf("  想一起托管前端的话：先 cd web && npm run build，或用 CHATROOM_WEB_DIR 指定目录")
+		return
+	}
+
+	// http.FileServer 自己会处理路径安全（不允许 .. 跳出目录）、
+	// 目录请求自动找 index.html、以及 MIME 类型。
+	fileServer := http.FileServer(http.Dir(dir))
+
+	r.NoRoute(func(c *gin.Context) {
+		p := c.Request.URL.Path
+
+		// 拼错的接口路径要老老实实报 404。
+		// 如果也回退到 index.html，调用方会拿到一坨 HTML，
+		// 而解析 JSON 时只会得到一个莫名其妙的语法错误。
+		if p == "/api" || strings.HasPrefix(p, "/api/") || p == "/ws" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "接口不存在"})
+			return
+		}
+
+		fileServer.ServeHTTP(c.Writer, c.Request)
+	})
+
+	log.Printf("已托管前端静态文件: %s", dir)
 }
 
 // serveWS 处理 GET /ws：把 HTTP 连接升级成 WebSocket，然后交给 Hub 管理。
